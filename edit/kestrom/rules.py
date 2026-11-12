@@ -15,8 +15,9 @@ action acted).
       cross entropy of the answer tokens through the out and move lines (the units continuous, no gate); the rules stay as written.
   kestrom rules write-mlp MODEL RULES.dsl DATA.json DST [BALANCE] [K]
       rules of h1, h2 and out lines only (one layer of units) written into the last MLP instead (tier 2; python -m pydoc kestrom.mlp).
-The language: one line each, `HEAD: BODY`; `#` outside double quotes starts a comment; TEXT is a JSON string ("..."); a TOKEN is a
-word or a JSON string ("##", " the"); paths as given (from the working directory). An input is a name in an h1 line: declared by an `in` line, or else read by a probe.
+The language: one line each, `HEAD: BODY` (the first : outside double quotes); `#` outside double quotes starts a comment; TEXT is
+a JSON string ("..."); a TOKEN is a word or a JSON string ("##", " the"); paths as given (from the working directory). An input is
+a name in an h1 line: declared by an `in` line, or else read by a probe.
   in NAME: prompt FILE LAYER                 holds on the whole decoding when the mean over the prompt tokens of LAYER's output,
                                              on the condition vector of FILE (kestrom steer direction), is past its threshold
   in NAME: after TEXT                        holds from the token that completes the first TEXT in the output on
@@ -56,6 +57,7 @@ LAMBDA, GATE = 1e-2, 0.5  # the ridge of the probes (times the mean diagonal of 
 K = 4.0  # the scale of the out lines and the margin of the moves, unless a fit gives another
 TERM = re.compile(r"([+-]?)\s*(?:(\d+(?:\.\d+)?)\s*\*\s*)?([A-Za-z_][\w.]*)")
 CODE = re.compile(r'(?:[^"#]|"(?:[^"\\]|\\.)*")*')  # a line up to a # outside double quotes
+HEAD = re.compile(r'((?:[^":]|"(?:[^"\\]|\\.)*")*):')  # the head: up to the first : outside double quotes
 KINDS = ("in", "h1", "h2", "out", "move", "ban", "add", "phrase", "loopguard")
 
 
@@ -66,9 +68,10 @@ def lines(text):
         r = CODE.match(r).group(0).strip()
         if not r:
             continue
-        head, sep, body = r.partition(":")
+        m = HEAD.match(r)
+        head, body = (m.group(1), r[m.end():]) if m else ("", "")
         words = head.split(None, 1)
-        if not sep or not words or words[0] not in KINDS:
+        if not m or not words or words[0] not in KINDS:
             raise ValueError(f"every line is `KIND ...: ...` with KIND one of {', '.join(KINDS)}: {r!r}")
         out.append((words[0], words[1].strip() if len(words) > 1 else "", body.strip()))
     return out

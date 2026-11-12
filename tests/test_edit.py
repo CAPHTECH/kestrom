@@ -264,6 +264,9 @@ loopguard:
     for bad in ("position", "position 2 1", "position -1", "position a", "position 1 2 3"):
         with pytest.raises(ValueError):
             rules.declare(bad)
+    assert rules.lines('ban ":" x: b\nout "a:b": b') == [("ban", '":" x', "b"), ("out", '"a:b"', "b")]  # a : inside quotes
+    with pytest.raises(ValueError):
+        rules.lines('ban ":: b')
 
 
 def test_rules_inputs_of_in_lines():
