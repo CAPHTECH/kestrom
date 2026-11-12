@@ -220,7 +220,8 @@ changes MLP weights in a few layers; such edits are tier 2 in our terms.
 - G2 for decode-time edits trusts the events the decoding records, and `compare` trusts that its input files are the outputs they
   claim to be (see §2).
 - Tested only on Apple Silicon, with Qwen3.5 (0.8B, 9B) and Qwen3-8B. Not tested: Linux, CUDA, models whose output layer is tied to
-  the embedding (Qwen3.5-0.8B is tied, so its row edits are out of reach of `range`), quantization types other than Q4_K_M.
+  the embedding in GGUF, quantization types other than Q4_K_M. In a tied model (Qwen3.5-0.8B) a changed row is also an input
+  embedding, so G1 and G2 hold only for inputs without a changed id; the reports check those and count the others.
 - The experiments are single runs of 100 to 300 prompts.
 - Most tier-2 edits and the `find` commands are checked for what they change, not for their effect; several tools missed the targets
   we set for them (§5.5).

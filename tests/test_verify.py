@@ -119,6 +119,52 @@ def test_range_finds_rows_and_other_bytes(tmp_path, base):
     assert w["files equal but for the changed rows"] == 1 and w["files not equal"] == ["config.json"]  # the config changed: W fails
 
 
+def test_range_of_an_output_layer_tied_to_the_embedding(tmp_path, base):
+    tied = {k: v for k, v in base.items() if k != "lm_head.weight"} | {"model.embed_tokens.weight": base["lm_head.weight"]}
+    o = folder(tmp_path / "o", tied)
+    m = {k: v.copy() for k, v in tied.items()}
+    m["model.embed_tokens.weight"][[2, 5]] = 7
+    w = weights.diff(o, folder(tmp_path / "e", m))["weights"]
+    assert w["output layer"] == "model.embed_tokens.weight" and w["tied to the embedding"] and w["changed rows"] == [2, 5]
+    assert w["files equal but for the changed rows"] == w["files"]
+    both = folder(tmp_path / "both", base | {"model.embed_tokens.weight": base["lm_head.weight"]})  # an output layer of its own
+    assert weights.output(both)[4] == "lm_head.weight" and "tied to the embedding" not in weights.diff(both, both)["weights"]
+
+
+def test_compare_tied_counts_prompts_with_a_changed_id_outside(tmp_path):
+    w = {"files": 2, "files equal but for the changed rows": 2, "changed rows": [9], "tied to the embedding": True}
+    (tmp_path / "range.json").write_text(json.dumps({"weights": w}))
+    (tmp_path / "untied.json").write_text(json.dumps({"weights": {k: v for k, v in w.items() if k != "tied to the embedding"}}))
+    p = tmp_path / "prompts.json"
+    p.write_text(json.dumps([{"id": 0, "ids": [1, 2]}, {"id": 1, "ids": [9, 3]}]))  # prompt 1 holds the changed id 9
+    a = gens(tmp_path / "a.jsonl", [([1, 2, 3], []), ([1, 2, 3], [])])
+    e = gens(tmp_path / "e.jsonl", [([1, 2, 3], []), ([5, 2, 3], [])])  # prompt 1 differs at once, outside the range
+    report.greedy(tmp_path / "range.json", (a, a, e), str, tmp_path / "r.json", p)
+    r = report.read(tmp_path / "r.json")
+    assert r["greedy"]["prompts with a changed id"] == 1 and r["greedy"]["same or first difference in the range"] == 1
+    assert [x["changed id in the prompt"] for x in r["rows"]] == [False, True] and list(r["prompts"]) == ["prompts.json"]
+    a9, e9 = gens(tmp_path / "a9.jsonl", [([9, 1, 2], []), ([1, 2, 3], [])]), gens(tmp_path / "e9.jsonl", [([9, 1, 5], []), ([1, 2, 3], [])])
+    report.greedy(tmp_path / "range.json", (a9, a9, e9), str, tmp_path / "r9.json", p)  # both chose 9, then differ: a changed input
+    assert report.read(tmp_path / "r9.json")["rows"][0]["in the range"]
+    with pytest.raises(SystemExit):  # untied, a changed id read as input changes nothing: that difference is outside the range
+        report.greedy(tmp_path / "untied.json", (a9, a9, e9), str, tmp_path / "r9u.json")
+    e2 = gens(tmp_path / "e2.jsonl", [([5, 2, 3], []), ([1, 2, 3], [])])  # a prompt with no changed id differing outside the range
+    with pytest.raises(SystemExit):
+        report.greedy(tmp_path / "range.json", (a, a, e2), str, tmp_path / "r2.json", p)
+    for args in ((tmp_path / "range.json", None), (tmp_path / "untied.json", p)):  # prompts with a tied range, and only with it
+        with pytest.raises(SystemExit, match="PROMPTS.json"):
+            report.greedy(args[0], (a, a, e), str, tmp_path / "r3.json", args[1])
+    p.write_text(json.dumps([{"id": 0, "ids": [1, 2]}]))
+    with pytest.raises(SystemExit, match="not in"):  # an output whose prompt is missing
+        report.greedy(tmp_path / "range.json", (a, a, e), str, tmp_path / "r4.json", p)
+
+
+def test_g1_counts_only_the_sequences_it_checks():
+    v = report.verdict({"forced": {"sequences": 3, "original_equal": 3, "other_equal": 2, "sequences_outside": 1}})
+    assert [(n, of, ok) for _, n, of, ok in v] == [(3, 3, True), (2, 2, True)] and v[1][0].endswith(report.TIED)
+    assert not report.verdict({"forced": {"sequences": 1, "original_equal": 1, "other_equal": 0, "sequences_outside": 1}})[1][3]  # none checked
+
+
 def test_range_pairs_files_by_path_nested_too(tmp_path, base):
     o = folder(tmp_path / "o", base)
     (o / "sub").mkdir()

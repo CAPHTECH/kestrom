@@ -16,7 +16,9 @@ def forced(original, edited, inputs, out):
     """Teacher forcing on every sequence of inputs (a JSON list of {"ids": prompt ids, "tokens": answer ids, other keys kept}), at
     every position, with the original output layer twice and the edited once: the original equal to itself (U0), every logit of an
     unchanged row equal to the original's (G1). Reported only: the positions whose original top token's row changed; at the
-    positions that predict the answer, those whose edited top token's row changed and the highest logit of a changed row there."""
+    positions that predict the answer, those whose edited top token's row changed and the highest logit of a changed row there. An
+    output layer tied to the embedding is read from the edited folder as the embedding too: G1 checks only the sequences whose ids and
+    tokens hold no changed id, and counts the others (sequences_outside)."""
     import mlx.core as mx
     import numpy as np
     from mlx.utils import tree_flatten
@@ -27,16 +29,18 @@ def forced(original, edited, inputs, out):
         raise SystemExit("other bytes than the output layer's rows differ: G1 here would be about another model; use kestrom-verify measure (no guarantee)")
     changed = w["changed rows"]
     model, _ = load(str(original))
-    name = next(k for k, _ in tree_flatten(model.parameters()) if k.endswith("lm_head.weight"))
     file, _, _, _, key = weights.output(original)
+    tied = weights.tied(key)  # then the changed rows are also input embeddings: a sequence holding a changed id is not checked
+    name = next(k for k, _ in tree_flatten(model.parameters()) if k.endswith(weights.NAMES["embedding" if tied else "output"][0]))
     W0, W1 = dict(tree_flatten(model.parameters()))[name], mx.load(str(Path(edited) / file.name))[key]
     assert mx.array_equal(W0.view(mx.uint8), mx.load(str(file))[key].view(mx.uint8)), "the loaded output layer is not the file's"
     keep = np.ones(W0.shape[0], bool)
     keep[changed] = False
     keep, ids_changed = mx.array(keep), mx.array(changed)
     keys = ("positions", "original_equal", "other_equal", "positions_other_equal", "positions_top_changed", "answer_positions", "answer_edited_top_changed")
-    rows, totals, high = [], dict(sequences=0, **{k: 0 for k in keys}), -float("inf")
+    rows, totals, high = [], dict(sequences=0, **{k: 0 for k in keys}, **({"sequences_outside": 0} if tied else {})), -float("inf")
     for x in report.read(inputs):
+        outside = tied and bool(set(x["ids"] + x["tokens"]) & set(changed))
         ids = mx.array([x["ids"] + x["tokens"]])
         model.load_weights([(name, W0)], strict=False)
         a, b = model(ids)[0], model(ids)[0]
@@ -51,11 +55,14 @@ def forced(original, edited, inputs, out):
         high = max(high, float(changed_max))
         row = dict({k: v for k, v in x.items() if k not in ("ids", "tokens")}, positions=a.shape[0], original_equal=bool(mx.array_equal(bits(a), bits(b))),
                    other_equal=bool(mx.all(eq)), positions_other_equal=int(mx.sum(eq)), positions_top_changed=int(mx.sum(top_changed)),
-                   answer_positions=answer.shape[0], answer_edited_top_changed=int(mx.sum(edited_changed)), answer_max_changed=float(changed_max))
+                   answer_positions=answer.shape[0], answer_edited_top_changed=int(mx.sum(edited_changed)), answer_max_changed=float(changed_max),
+                   **({"changed_id_in_input": outside} if tied else {}))
         rows.append(row)
         totals["sequences"] += 1
         for k in keys:
-            totals[k] += int(row[k])
+            totals[k] += int(row[k]) * (k != "other_equal" or not outside)  # G1 counts only the sequences it checks
+        if outside:
+            totals["sequences_outside"] += 1
         if totals["sequences"] % 50 == 0:
             print(totals, flush=True)
     model.load_weights([(name, W0)], strict=False)

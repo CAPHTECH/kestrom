@@ -3,8 +3,8 @@
 A report is a JSON file with no times in it and with the SHA-256 of every model file, input and output it was made from. The same
 inputs on the same machine give the same bytes: rebuild a report in another process and compare it with `cmp`. Each command that
 writes a report ends by printing every check as `name: count of total PASS|FAIL`, and exits with status 1 if one fails (the report
-is written either way). `logits` when W fails and `compare` when its range report did not pass stop before checking anything, with
-no report. A check passes when the count equals the total and the total is not zero (a check over no sequences checked nothing); D
+is written either way). `logits` when W fails, and `compare` when its range report did not pass or PROMPTS.json does not fit the
+range or the outputs, stop before checking anything, with no report. A check passes when the count equals the total and the total is not zero (a check over no sequences checked nothing); D
 over no changes passes.
 
 ## The checks
@@ -13,9 +13,9 @@ over no changes passes.
 |---|---|---|
 | W | `weights` | Every file under the folder, nested ones too, paired by its path, is byte-identical to the original's except the changed rows of the output layer; a file on one side only fails. The rows are read from the bytes; `files not equal` names the others |
 | U0 (teacher forcing) | `forced`, `measure` | The original model, run twice, gives exactly the same logits, bit for bit (the machine is deterministic) |
-| G1 (teacher forcing) | `forced` | At every position, every logit of an unchanged row of the output layer equals the original's, bit for bit |
+| G1 (teacher forcing) | `forced` | At every position, every logit of an unchanged row of the output layer equals the original's, bit for bit. Tied to the embedding: only sequences with no changed id |
 | U0 (greedy) | `greedy`, `measure greedy` | The original model, run twice, gives the same greedy output |
-| G2 (greedy, rows) | `greedy` | The edited output is the original's, or first differs where the original's or the edited token is a changed row. An output that stopped ends with its stop, so stopping against going on is a difference |
+| G2 (greedy, rows) | `greedy` | The edited output is the original's, or first differs where the original's or the edited token is a changed row. An output that stopped ends with its stop, so stopping against going on is a difference. Tied to the embedding: only prompts with no changed id, and a difference after a changed id both outputs share is also in the range |
 | G2 (greedy, events) | `greedy` (range `events`) | The edited output is the original's, or first differs at or after the first event the edited output records |
 | D | `declared` | Every changed tensor, row and file is inside the declaration |
 
@@ -31,7 +31,11 @@ not that a loop or a condition was really there.
 - **A row edit** (`kestrom rows`): the range is the rows of the output layer that changed. `range` reads it from the bytes and checks
   that every other byte (the other tensors, the file headers, the config and tokenizer files) is the same (W). Then, before the range
   is reached, the hidden state is computed by the same bytes, so every logit of an unchanged row is the original's (G1), and greedy
-  decoding can only first differ where a changed row is the top token (G2).
+  decoding can only first differ where a changed row is the top token (G2). An output layer tied to the embedding (no output layer
+  tensor of its own) is also the input: a changed row is also the input embedding of its token. Then G1 and G2 hold only for
+  inputs that hold no changed id, so `logits` checks G1 on the sequences whose ids and tokens hold none, `compare` (given the
+  prompts) checks G2 on the prompts that hold none, and both count the others, not checked. In an output, the range is reached at
+  the first changed id either model writes, the same in both or not: from there the edited model also reads a changed input. A ban row is then also what the model reads for a banned token in its input.
 - **An inference-time edit** (`kestrom generate`): the weights do not change. Each output records its events, the
   output positions where an edit acted (conditional steering: position 0 when the condition fires; rules: every position where a
   rule fired; a phrase ban: the start of the phrase it went back to; the loop guard: the start of the first loop). Before the first
@@ -52,7 +56,8 @@ how much they moved.
 A trigger (`kestrom trigger`) is in this tier: `diff` with the rows declared checks that only the embedding rows of its spare ids
 changed. An embedding row is read only for its own id, so for an untied embedding a sequence without those ids is computed by the
 original bytes; `measure` on prompts without the trigger counts the positions whose logits are all the same, but no check computes
-this. A tied embedding is also the output layer, and the rows would change the spare ids' logits everywhere.
+this. A tied embedding is also the output layer: there the spare rows change the spare ids' logits everywhere, and `range`,
+`logits` and `compare` check the trigger as a row edit of a tied output layer (for inputs without the spare ids).
 
 ## Tier 3: measured only
 
@@ -70,17 +75,17 @@ output. The report says `no guarantee`.
   different greedy outputs for the same original weights.
 - Sampling. The guarantees are about teacher-forced logits and greedy decoding.
 - Not tested: Linux, CUDA, imatrix quantization and quantization types other than Q4_K_M, models whose output layer is tied to the
-  embedding (`range` stops when there is no `lm_head`), edits of input rows.
+  embedding in GGUF (tested in MLX, with Qwen3.5-0.8B), edits of input rows.
 
 ## Commands
 
 | Command | What it does | Needs |
 |---|---|---|
-| `range ORIGINAL EDITED REPORT.json` | The changed rows of the output layer and W. Weights: a folder of safetensors (output layer `*lm_head.weight`) or a GGUF file (`output.weight`) | numpy; gguf for GGUF |
+| `range ORIGINAL EDITED REPORT.json` | The changed rows of the output layer and W. Weights: a folder of safetensors (output layer `*lm_head.weight`) or a GGUF file (`output.weight`); without it, the output layer is tied to the embedding (`*embed_tokens.weight`, `token_embd.weight`) | numpy; gguf for GGUF |
 | `logits ORIGINAL EDITED INPUTS.json REPORT.json` | Teacher forcing: U0 and G1. The edited model is the original with its output layer read from the edited folder, so it stops if W fails (use `measure`) | mlx, mlx-lm |
 | `generate mlx MODEL PROMPTS.json OUT.jsonl [MAX_TOKENS]` | Greedy decoding with MLX (512 tokens unless given) | mlx, mlx-lm |
 | `generate gguf MODEL.gguf PROMPTS.json TOKENIZER OUT.jsonl` | Greedy decoding with llama-server, one slot. TOKENIZER: a Hugging Face folder, for the text | llama-server, transformers |
-| `compare RANGE.json ORIGINAL.jsonl ORIGINAL2.jsonl EDITED.jsonl TOKENIZER REPORT.json` | U0 and G2 against the range of a `range` (or `logits`) report, or `events` | transformers |
+| `compare RANGE.json ORIGINAL.jsonl ORIGINAL2.jsonl EDITED.jsonl TOKENIZER REPORT.json [PROMPTS.json]` | U0 and G2 against the range of a `range` (or `logits`) report, or `events`. PROMPTS.json, the prompts of the outputs: with a range tied to the embedding, and only with it | transformers |
 | `measure ORIGINAL EDITED INPUTS.json REPORT.json [ORIGINAL.jsonl ORIGINAL2.jsonl EDITED.jsonl]` | Tier 3 counts and U0 | mlx, mlx-lm |
 | `diff ORIGINAL EDITED REPORT.json [DECLARED.json]` | Tier 2: every tensor, and D | numpy; gguf for GGUF |
 | `summary REPORT.json` | The report in markdown | — |

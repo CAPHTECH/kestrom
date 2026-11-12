@@ -1,6 +1,7 @@
 """The range of a row edit, read from the weights and not from what the editor says: which rows of the output layer changed, and
 that every other byte of the weight files is the same. The weights are a folder of safetensors (the output layer is the tensor
-named *lm_head.weight) or one GGUF file (output.weight; the gguf package is imported only for it)."""
+named *lm_head.weight) or one GGUF file (output.weight; the gguf package is imported only for it). Without that tensor the output
+layer is tied to the embedding (*embed_tokens.weight, token_embd.weight), and its changed rows are also inputs that changed."""
 import json
 from pathlib import Path
 
@@ -29,13 +30,20 @@ def safetensors_tensors(folder, end):
 
 
 def output(path, which="output"):
-    """(file, first byte, end byte, rows, name) of the output layer (or of the embedding: which="embedding")."""
+    """(file, first byte, end byte, rows, name) of the output layer (or of the embedding: which="embedding"). Weights with no output
+    layer tensor have it tied to the embedding: then the output layer is the embedding (tied(name))."""
     path = Path(path)
     if path.is_dir():
-        return next(safetensors_tensors(path, NAMES[which][0]))
+        return next(safetensors_tensors(path, NAMES[which][0]), None) or next(safetensors_tensors(path, NAMES["embedding"][0]))
     import gguf
-    t = next(t for t in gguf.GGUFReader(path).tensors if t.name == NAMES[which][1])
+    ts = {t.name: t for t in gguf.GGUFReader(path).tensors}
+    t = ts.get(NAMES[which][1]) or ts[NAMES["embedding"][1]]
     return path, t.data_offset, t.data_offset + t.n_bytes, int(t.data.shape[0]), t.name
+
+
+def tied(name):
+    """Whether the output layer of that name (output(...)[4]) is the embedding, so that its changed rows are also changed inputs."""
+    return name == NAMES["embedding"][1] or name.endswith(NAMES["embedding"][0])
 
 
 def dtype(path):
@@ -117,5 +125,5 @@ def diff(original, edited):
     if not (same(0, start) and same(end, len(x))):
         unequal = sorted(unequal + [k or file.name])
     return {"original": named(a, ha), "edited": named(b, hb),
-            "weights": {"output layer": name, "files": len(set(a) | set(b)), "files equal but for the changed rows": len(set(a) | set(b)) - len(unequal),
-                        "files not equal": unequal, "changed rows": changed}}
+            "weights": {"output layer": name, **({"tied to the embedding": True} if tied(name) else {}), "files": len(set(a) | set(b)),
+                        "files equal but for the changed rows": len(set(a) | set(b)) - len(unequal), "files not equal": unequal, "changed rows": changed}}
