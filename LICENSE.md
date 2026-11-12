@@ -6,7 +6,7 @@ This repository holds two packages under two licenses.
 |---|---|---|---|
 | `verify/` | `kestrom-verify` | Apache License 2.0 | [verify/LICENSE](verify/LICENSE) |
 | `edit/` | `kestrom` | PolyForm Small Business License 1.0.0 or PolyForm Noncommercial License 1.0.0, your choice | [edit/LICENSE](edit/LICENSE); commercial terms in [edit/COMMERCIAL.md](edit/COMMERCIAL.md) |
-| `docs/`, `examples/`, `tests/`, `paper/`, this file and `README.md` | — | Apache License 2.0 | [verify/LICENSE](verify/LICENSE) |
+| `docs/`, `examples/`, `tests/`, `paper/`, this file, `README.md` and `CONTRIBUTING.md` | — | Apache License 2.0 | [verify/LICENSE](verify/LICENSE) |
 
 Copyright 2026 CAPH TECH Inc.
 

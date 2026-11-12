@@ -207,6 +207,10 @@ check, and [examples/](examples/) for three runs from start to end.
   [edit/COMMERCIAL.md](edit/COMMERCIAL.md).
 - See [LICENSE.md](LICENSE.md).
 
+## Contributing
+
+Issues are welcome; pull requests are not accepted for now (see [CONTRIBUTING.md](CONTRIBUTING.md)).
+
 ## Work with us
 
 CAPH TECH Inc. builds custom bounded edits (banned token lists, output formats, styles) and acceptance reports for edited or
