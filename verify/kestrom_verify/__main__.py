@@ -1,5 +1,6 @@
-"""kestrom-verify: check a weight edit on your own machine. Every command writes a JSON report with no times in it (the same inputs
-give the same bytes), prints each check as `name: count of total PASS|FAIL`, and exits with status 1 if one fails.
+"""kestrom-verify: check a weight edit on your own machine. Every command but generate and summary writes a JSON report with no
+times in it (the same inputs give the same bytes), prints each check as `name: count of total PASS|FAIL`, and exits with status 1
+if one fails. logits when W fails and compare when its range report did not pass stop first, with no report.
   range ORIGINAL EDITED REPORT.json                        the range of a row edit, read from the bytes: the changed rows of the
                                                            output layer, and every other byte the same (W). Folders of
                                                            safetensors, or GGUF files

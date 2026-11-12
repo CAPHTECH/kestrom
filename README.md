@@ -33,14 +33,15 @@ The checks that pass say which tier an edit is in. Kestrom does not blur them.
 
 | Tier | What is checked | Commands | Edits |
 |---|---|---|---|
-| 1. Outputs | Greedy output is the same until the range is reached (G2); for a row edit, every logit outside the range is also bit-identical to the original (G1) | Row edits: `range`, `logits`, `compare`. Decode-time edits: `compare events`. Trigger rows: `diff`, `measure` | `kestrom rows` (rows of the output layer), `kestrom generate` (decode-time edits: rules, conditional steering, adding a direction after a given text, phrase bans, loop stopping), `kestrom trigger` (spare rows of the embedding) |
-| 2. Weights | Only the declared tensors / rows changed (declaration check D). How much the outputs moved is counted, not bounded | `diff`, `measure` | `kestrom edit` (neuron and head gains, a head's write along a direction, keyed writes, neuron writes, a direction out of a few `down_proj` columns), `kestrom rules write-mlp` (rules in MLP neurons) |
+| 1. Outputs | Greedy output is the same until the range is reached (G2); for a row edit, every logit outside the range is also bit-identical to the original (G1) | Row edits: `range`, `logits`, `compare`. Decode-time edits: `compare events` | `kestrom rows` (rows of the output layer), `kestrom generate` (decode-time edits: rules, conditional steering, adding a direction after a given text, phrase bans, loop stopping) |
+| 2. Weights | Only the declared tensors / rows changed (declaration check D). How much the outputs moved is counted, not bounded | `diff`, `measure` | `kestrom edit` (neuron and head gains, a head's write along a direction, keyed writes, neuron writes, a direction out of a few `down_proj` columns), `kestrom rules write-mlp` (rules in MLP neurons), `kestrom trigger` (spare rows of the embedding) |
 | 3. Measured only | What changed, and how much | `measure`, `diff` | `kestrom merge`, and any fine-tune (LoRA too) or quantization made elsewhere |
 
-Determinism (U0: the original model gives the same logits and the same greedy output twice on your machine) is checked by every
-command that runs a model (`logits`, `compare`, `measure`). If U0 fails, G1 and G2 in that report mean nothing. `range` and `diff`
-read only bytes. `compare` checks the output files you give it: write them yourself, running the original twice. For decode-time
-edits it checks the output against the events the decoding records, not that a loop or a condition was really there.
+Determinism (U0: the original model gives the same logits and the same greedy output twice on your machine) is checked by `logits`
+and `measure`, which run the original twice, and by `compare`, on the two outputs of the original you give it. If U0 fails, G1 and
+G2 in that report mean nothing. `range` and `diff` read only bytes. `compare` checks the output files you give it: write them
+yourself, running the original twice. For decode-time edits it checks the output against the events the decoding records, not that
+a loop or a condition was really there.
 
 ## The editing tools
 
@@ -58,7 +59,7 @@ for several tools it fell short. Each command's help (`kestrom`, `python -m pydo
 | `kestrom generate --rules`: `in … prompt` and `add` lines (conditional steering) | One layer's output, when a condition read on the prompt fires | 1 | Polite sentences 0.641 → 0.0; JMMLU 0.72 → 0.72 (Qwen3.5-9B; below) |
 | `kestrom generate --rules`: `phrase` lines | Goes back and bans the token that started a listed phrase | 1 | Listed phrases (`**`, `##`, three stock phrases) 3,092 → 0; JMMLU 0.74 → 0.68 at 1,024 tokens, target ≤ 1 point not reached. The model writes its answer in bold (**B**); banned there, it hedged or answered by name (Qwen3.5-9B). To drop markup only, strip it from the text after decoding |
 | `kestrom generate --rules`: a `loopguard` line | Goes back at a thinking loop and forbids repeated 16-token pieces | 1 | Correct 4 → 26 of 100 (Qwen3.5-0.8B; below) |
-| `kestrom trigger` | Spare rows of the embedding, learned as a trigger | 1 (untied embedding) | With the trigger, polite sentences 0.641 → 0.017; without it, every logit of 150 prompts equal. JMMLU with the trigger 0.74 → 0.71, target ≤ 1 point not reached (Qwen3.5-9B) |
+| `kestrom trigger` | Spare rows of the embedding, learned as a trigger | 2 | With the trigger, polite sentences 0.641 → 0.017; without it, every logit of 150 prompts equal. JMMLU with the trigger 0.74 → 0.71, target ≤ 1 point not reached (Qwen3.5-9B) |
 | `kestrom generate --rules`: `add` lines with `in … after` or `thinking` | One layer's output plus a direction, from the token that completes a given text, or while thinking | 1 | Not measured |
 | `kestrom generate --rules`: `ban` lines | Logits of tokens set to −inf where a unit fires | 1 | Not measured. A ban is of tokens, not characters: banning 、 left the token 、「 free (Qwen3.5-0.8B); to keep a string out, use a `phrase` line |
 | `kestrom edit subtract` | A direction out of the `down_proj` columns that write most of it | 2 | Not measured as a Kestrom command; Astra's published edit of this form is in the results below |
@@ -66,7 +67,7 @@ for several tools it fell short. Each command's help (`kestrom`, `python -m pydo
 | `kestrom edit head-gain` | An attention head's output times k (its columns of `o_proj`, or `out_proj` for linear attention) | 2 | Not measured |
 | `kestrom edit head-proj` | What a head writes along a direction, removed, flipped or amplified (CHiPS) | 2 | Not measured |
 | `kestrom edit keyed` | A rank-1 write into `down_proj` that a key opens at the positions to write and keeps shut on the others | 2 | Not measured |
-| `kestrom edit neuron-write` | Unused neurons rewritten to write a direction where a key opens (one neuron, or a capped pair) | 2 | Not measured |
+| `kestrom edit neuron-write` | The least-used neurons rewritten to write a direction where a key opens (one neuron, or a capped pair) | 2 | Not measured |
 | `kestrom rules write-mlp` | The rules written into neurons of the last MLP | 2 | 0.749–0.785 of sentences on target, target 0.835 not reached (PLaMo 3 Translate, earlier PyTorch form) |
 | `kestrom train sft-data` | Fine-tuning data (prompt-completion pairs) from the edited outputs | 3 | A LoRA trained on it with mlx_lm: listed phrases −99%, but it also copied its training answers; JMMLU 0.70 against 0.74 (Qwen3.5-9B) |
 | `kestrom merge` | A + λ (B − C), tensor by tensor | 3 | Qwen3.5-9B toward its Base at λ 0.25 and 0.5: listed phrases 3,527 and 3,716 against 3,092, no reduction |

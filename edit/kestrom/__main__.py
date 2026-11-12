@@ -14,14 +14,14 @@
   rows ftpo MODEL GENERATED.jsonl PROMPTS.json DST [LIST.txt] [STOP_ACCURACY]
                                                         the rows of the tokens of phrase events, by FTPO
                                                         (every rows command: every other byte the same)
-  trigger {prompts, train, write} ...                   a trigger in spare rows of the embedding (prompt tuning in the weights)
+  trigger {prompts, train, write} ...                   a trigger in spare rows of the embedding (tier 2)
   find {direction, lens, reverse, writers, heads} ...   where to edit (reads only)
   edit {neuron-gain, head-gain, head-proj, subtract, keyed, neuron-write} ...
                                                         edits inside decoder layers (tier 2)
   train sft-data GENERATED.jsonl OUT_DIR                fine-tuning data from the outputs (tier 3: no guarantee)
   merge A B C LAMBDA DST                                weight arithmetic, A + LAMBDA (B - C) (tier 3)
 Each module's docstring has the details (python -m pydoc kestrom.generate, kestrom.rules, kestrom.steer, kestrom.loopguard,
-kestrom.rows, kestrom.trigger, kestrom.find,
+kestrom.rows, kestrom.trigger, kestrom.find, kestrom.mlp,
 kestrom.units, kestrom.train)."""
 import sys
 

@@ -1,5 +1,6 @@
-"""Rules written into the last MLP (tier 2: only the gate and up rows and the down columns of the chosen neurons of that MLP change,
-check it with kestrom-verify diff and DST.declared.json; the outputs change wherever those neurons are active, measure them). The
+"""Rules written into the last MLP (tier 2: only the gate and up rows and the down columns of the chosen neurons of that MLP change;
+kestrom-verify diff with DST.declared.json checks rows, and a column touches every row of down_proj, so there it checks only
+that no other tensor changed; the outputs change wherever those neurons are active, measure them). The
 rules are those of kestrom rules with one layer of units: each h2 line passes one h1 unit on (`h2 v: any(u)`), and there are no
 move lines. Each h1 unit takes two of the least used neurons of the last MLP (silu(gate) times up, a SwiGLU MLP as Llama and Qwen):
 the gate row of the first is MLP_GAIN times the unit's line over probes read at the MLP input, its threshold put on a measured
@@ -44,7 +45,7 @@ def one_layer(text, tokens):
     for kind, rest, body in L:
         if kind == "out":
             for unit, a in rules.terms(body):
-                C[via[unit], tokens.index(rest)] += a
+                C[via[unit], tokens.index(rules.words(rest)[0])] += a
     return len(h1), C
 
 

@@ -1,5 +1,5 @@
 """Conditional activation steering (CAST, arXiv 2409.05907), greedy (MLX). A condition vector read on the prompt decides, before
-decoding, whether to add ALPHA times a direction to the output of one decoder layer at every position. A prompt the condition does
+decoding, whether to add ALPHA times a unit direction to the output of one decoder layer at every position. A prompt the condition does
 not fire on is decoded by the unchanged model, so its output is the original's (kestrom-verify compare events: the event is at 0
 when it fires, none when it does not). In the rules language (python -m pydoc kestrom.rules):
   in c: prompt DIRECTION.npz COND_LAYER

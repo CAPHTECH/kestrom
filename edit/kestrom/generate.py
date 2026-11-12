@@ -5,9 +5,10 @@ original's, so check it with kestrom-verify compare events against two runs of t
   kestrom generate MODEL PROMPTS.json OUT.jsonl [--rules RULES.dsl|FIT.npz] [--max-tokens N]
   --rules       the rules: a .dsl file, or a fit of kestrom rules fit when they read probed features
   --max-tokens  the longest output (512 unless given)
-PROMPTS: a JSON list of {"ids": prompt ids, other keys kept}. OUT: per prompt, the keys of the prompt, finish (stop or length), the
-tokens without the stop token, text, events (sorted positions) and detail (each backtrack: kind, position, kept: whether the final
-output kept the tokens before it)."""
+PROMPTS: a JSON list of {"ids": prompt ids, other keys kept}. OUT: per prompt, the keys of the prompt, finish (stop or length),
+the tokens without the stop token, text, events (sorted positions) and detail (each backtrack: kind, phrase or loop, position,
+kept: whether the final output kept the tokens before it; a phrase also string and banned, the token banned, null with gave_up
+when it gave up)."""
 import argparse
 import json
 

@@ -222,9 +222,11 @@ def test_merge_interpolates_and_refuses_other_shapes(tmp_path):
 
 
 def test_mlp_one_layer_reads_pass_through_rules_only():
-    from kestrom import mlp
+    from kestrom import mlp, rules
     n, C = mlp.one_layer("h1 a: any(x)\nh1 b: all(x, y)\nh2 va: any(a)\nh2 vb: any(b)\nout わ: 4*va\nout まし: 2*vb - va\n", ["わ", "まし"])
     assert n == 2 and C.tolist() == [[4.0, -1.0], [0.0, 2.0]]
+    text = 'h1 a: any(x)\nh2 v: any(a)\nout "##": 2*v\nout " the": v\n'  # tokens as JSON strings, as kestrom rules reads them
+    assert mlp.one_layer(text, rules.compile_rules(text)["tokens"])[1].tolist() == [[2.0, 1.0]]
     with pytest.raises(SystemExit):
         mlp.one_layer("h1 a: any(x)\nh1 b: any(y)\nh2 v: all(a, b)\nout わ: 4*v\n", ["わ"])
     with pytest.raises(SystemExit):

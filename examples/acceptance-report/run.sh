@@ -6,7 +6,7 @@ set -e
 cd "$(dirname "$0")"
 M=$1; E=$2; Q=$3; D=${4:-}; O=out; mkdir -p $O
 # 1. every tensor and file, against the declaration if one is given (tier 2: D)
-kestrom-verify diff "$M" "$E" $O/diff.json $D
+kestrom-verify diff "$M" "$E" $O/diff.json $D || true
 # 2. greedy: the original twice, the received model once
 python ../prompts.py "$M" "$Q" $O/prompts.json
 kestrom-verify generate mlx "$M" $O/prompts.json $O/base.jsonl

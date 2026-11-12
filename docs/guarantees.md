@@ -1,10 +1,11 @@
 # What Kestrom guarantees, and how it checks it
 
 A report is a JSON file with no times in it and with the SHA-256 of every model file, input and output it was made from. The same
-inputs on the same machine give the same bytes: rebuild a report in another process and compare it with `cmp`. Each command ends by
-printing every check as `name: count of total PASS|FAIL`, and exits with status 1 if one fails (the report is written either way). A
-check passes when the count equals the total and the total is not zero (a check over no sequences checked nothing); D over no
-changes passes.
+inputs on the same machine give the same bytes: rebuild a report in another process and compare it with `cmp`. Each command that
+writes a report ends by printing every check as `name: count of total PASS|FAIL`, and exits with status 1 if one fails (the report
+is written either way). `logits` when W fails and `compare` when its range report did not pass stop before checking anything, with
+no report. A check passes when the count equals the total and the total is not zero (a check over no sequences checked nothing); D
+over no changes passes.
 
 ## The checks
 
@@ -35,10 +36,6 @@ not that a loop or a condition was really there.
   output positions where an edit acted (conditional steering: position 0 when the condition fires; rules: every position where a
   rule fired; a phrase ban: the start of the phrase it went back to; the loop guard: the start of the first loop). Before the first
   event the decoding is the original's, so the output first differs at or after it (G2 with the range `events`).
-- **A trigger** (`kestrom trigger`): only the embedding rows of spare ids change, and an embedding row is read only for its own id, so
-  a sequence without those ids is computed by the original bytes. `diff` with the rows declared checks the first part; `measure` on
-  prompts without the trigger shows every logit the same. This holds for an untied embedding only: a tied one is also the output
-  layer, and the rows would change the spare ids' logits everywhere.
 
 ## Tier 2: the weights inside the declaration
 
@@ -51,6 +48,11 @@ inside it; an added, removed or retyped tensor, a changed file and changed metad
 
 A changed tensor inside the network can move the output at any position, so `diff` says nothing about outputs. `measure` counts
 how much they moved.
+
+A trigger (`kestrom trigger`) is in this tier: `diff` with the rows declared checks that only the embedding rows of its spare ids
+changed. An embedding row is read only for its own id, so for an untied embedding a sequence without those ids is computed by the
+original bytes; `measure` on prompts without the trigger counts the positions whose logits are all the same, but no check computes
+this. A tied embedding is also the output layer, and the rows would change the spare ids' logits everywhere.
 
 ## Tier 3: measured only
 
@@ -78,11 +80,11 @@ output. The report says `no guarantee`.
 | `logits ORIGINAL EDITED INPUTS.json REPORT.json` | Teacher forcing: U0 and G1. The edited model is the original with its output layer read from the edited folder, so it stops if W fails (use `measure`) | mlx, mlx-lm |
 | `generate mlx MODEL PROMPTS.json OUT.jsonl [MAX_TOKENS]` | Greedy decoding with MLX (512 tokens unless given) | mlx, mlx-lm |
 | `generate gguf MODEL.gguf PROMPTS.json TOKENIZER OUT.jsonl` | Greedy decoding with llama-server, one slot. TOKENIZER: a Hugging Face folder, for the text | llama-server, transformers |
-| `compare RANGE.json ORIGINAL.jsonl ORIGINAL2.jsonl EDITED.jsonl TOKENIZER REPORT.json` | U0 and G2 against the range of a `range` report, or `events` | transformers |
+| `compare RANGE.json ORIGINAL.jsonl ORIGINAL2.jsonl EDITED.jsonl TOKENIZER REPORT.json` | U0 and G2 against the range of a `range` (or `logits`) report, or `events` | transformers |
 | `measure ORIGINAL EDITED INPUTS.json REPORT.json [ORIGINAL.jsonl ORIGINAL2.jsonl EDITED.jsonl]` | Tier 3 counts and U0 | mlx, mlx-lm |
 | `diff ORIGINAL EDITED REPORT.json [DECLARED.json]` | Tier 2: every tensor, and D | numpy; gguf for GGUF |
 | `summary REPORT.json` | The report in markdown | — |
 
 Inputs: `PROMPTS.json` is `[{"id": ..., "ids": [prompt token ids]}, ...]`; `INPUTS.json` adds the answer tokens as `"tokens"`. Other
 keys are copied to the outputs. A generation (JSONL) has `id`, `finish` (`stop` or `length`), `tokens` (without the stop token) and
-`text`; an inference-time edit adds `events`.
+`text`; an inference-time edit adds `events` and `detail` (`python -m pydoc kestrom.generate`).

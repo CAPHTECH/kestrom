@@ -44,9 +44,10 @@ checks that pass say which tier the edit is in.
 | 2. Weights | Only the declared tensors and rows changed (D). The movement of the outputs is counted, not bounded | `diff`, `measure` |
 | 3. Measured | What changed, and how much | `measure`, `diff` |
 
-The reports that run a model (`logits`, `compare`, `measure`) also check U0: the original model, run twice on the receiver's machine,
-gives the same logits and the same greedy output. The output guarantees compare the original and the edited model *on the same
-machine and runtime*; if U0 fails, G1 and G2 in that report mean nothing. W and D read only bytes and need no run.
+The reports of `logits` and `measure`, which run the original twice, and of `compare`, which reads two runs of it, also check U0:
+the original model, run twice on the receiver's machine, gives the same logits and the same greedy output. The output guarantees
+compare the original and the edited model *on the same machine and runtime*; if U0 fails, G1 and G2 in that report mean nothing. W
+and D read only bytes and need no run.
 
 `compare` takes greedy outputs as files and checks them; it does not tie a file to the model and settings that wrote it. The receiver
 should write the outputs themselves, running the original twice. For a decode-time edit, G2 checks the output against the events the
@@ -96,13 +97,14 @@ above), a given text having appeared in the output, and whether the model is thi
 actions raise, move or ban token logits, add a direction to a layer's output, back out of a listed phrase (the Antislop sampler
 [5]) and stop a loop in the thinking (above). Where no unit of an action fires, the action leaves the computation as it was, so the
 same events and the same check (G2) cover every combination. `kestrom rows lsq` and
-`rows ftpo` rewrite output-layer rows toward target answers and are checked as row edits; `kestrom trigger` learns spare
-embedding rows. In tier 2, `kestrom edit` scales a neuron or an attention head, removes what a head writes along a direction,
-writes a rank-1 update into `down_proj` behind a key built to be zero on the positions to keep, rewrites unused neurons, or
+`rows ftpo` rewrite output-layer rows toward target answers and are checked as row edits. In tier 2, `kestrom trigger` learns
+spare embedding rows (that an input without them is computed as before follows for an untied embedding, and is measured, not
+checked), `kestrom edit` scales a neuron or an attention head, removes what a head writes along a direction,
+writes a rank-1 update into `down_proj` behind a key built to be zero on the positions to keep, rewrites the least-used neurons, or
 subtracts a direction from a few `down_proj` columns (the form of the edit in §5.3); `kestrom find` ranks layers, neurons and heads
 for these edits. They use the logit lens [8], differences of means [4], ablating and scaling heads [9], MLP neurons as keys and
 values [10] and rank-1 writes kept off the inputs to preserve [11, 12]; the combination and the defaults of the neuron and head
-edits follow the documentation of gguf-neuron-explorer [7]. Each edit writes the rows it changed as a declaration for D. In tier 3, `kestrom train sft-data` (fine-tuning data
+edits follow the documentation of gguf-neuron-explorer [7]. Each `kestrom edit` and `rules write-mlp` writes the rows it changed as a declaration for D; for a trigger, declare its rows yourself. In tier 3, `kestrom train sft-data` (fine-tuning data
 from the edited outputs) and `kestrom merge` are measured only. Except where §5 reports numbers, these tools were checked to run and to change only what they
 declare (on Qwen3.5-0.8B and 9B), not for how well they do their job.
 
@@ -184,10 +186,10 @@ changed the top token at 0.35%, yet no greedy answer of 100 stayed the same.
 ### 5.5 What did not work
 
 A trigger token in the vocabulary: Qwen3.5-9B has 243 spare rows. We learned the embedding of 32 of them so that the model, given
-them in a prompt, writes in the plain style. Only those 32 rows change, so every input without them is computed exactly as before
-(`diff` and `measure`: every logit equal at all 82,030 positions). It worked (polite sentences 0.641 → 0.017), but with the trigger,
-JMMLU accuracy fell from 0.74 to 0.71, beyond our one-point criterion: the model sometimes stated the answer without its letter. We
-keep the tool, with this result.
+them in a prompt, writes in the plain style. Only those 32 rows change (`diff`), so every input without them is computed exactly
+as before; that is measured, not checked (tier 2; `measure`: every logit equal at all 82,030 positions). It worked (polite
+sentences 0.641 → 0.017), but with the trigger, JMMLU accuracy fell from 0.74 to 0.71, beyond our one-point criterion: the model
+sometimes stated the answer without its letter. We keep the tool, with this result.
 
 Banning markup and stock phrases at decoding time (phrase lines on `**`, `##` and three phrases, Qwen3.5-9B): the listed strings fell
 from 3,092 to 0, but JMMLU accuracy at 1,024 tokens fell from 0.74 to 0.68. The model writes its answer in bold; banned there, it

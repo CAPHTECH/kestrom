@@ -1,5 +1,5 @@
 #!/bin/sh
-# Thinking loops in Qwen3.5-0.8B on MATH-500: the original twice, Astra's weight edit, and kestrom loopguard (greedy, 16,384 tokens).
+# Thinking loops in Qwen3.5-0.8B on MATH-500: the original twice, Astra's weight edit, and the loop guard of kestrom generate (greedy, 16,384 tokens).
 # Usage: sh examples/loop-guard/run.sh QWEN35_08B_FOLDER ASTRA_FOLDER MATH500_TEST.jsonl
 #   (Qwen/Qwen3.5-0.8B, RikiyaT/Qwen3.5-0.8B-weight-space-programming, HuggingFaceH4/MATH-500 test.jsonl; pip install math-verify)
 # About 10 hours on an Apple Silicon Mac.
