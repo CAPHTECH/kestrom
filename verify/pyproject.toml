@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kestrom-verify"
+version = "0.1.0"
+description = "Check a language-model weight edit: what changed, byte for byte, and that outputs outside the declared range stayed bit-identical"
+readme = "README.md"
+license-files = ["LICENSE"]
+license = "Apache-2.0"
+requires-python = ">=3.10"
+dependencies = ["numpy"]
+authors = [{ name = "CAPH TECH Inc." }]
+
+[project.optional-dependencies]
+mlx = ["mlx", "mlx-lm", "transformers"]
+gguf = ["gguf", "transformers"]
+
+[project.scripts]
+kestrom-verify = "kestrom_verify.__main__:main"
+
+[tool.setuptools]
+packages = ["kestrom_verify"]

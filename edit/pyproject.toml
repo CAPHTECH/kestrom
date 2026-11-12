@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kestrom"
+version = "0.1.0"
+description = "Edit a language model inside a range anyone can check with kestrom-verify"
+readme = "README.md"
+license = "LicenseRef-PolyForm-Small-Business-1.0.0 OR LicenseRef-PolyForm-Noncommercial-1.0.0"
+license-files = ["LICENSE", "LICENSE-POLYFORM-SMALL-BUSINESS.md", "LICENSE-POLYFORM-NONCOMMERCIAL.md", "COMMERCIAL.md"]
+requires-python = ">=3.10"
+dependencies = ["kestrom-verify", "numpy"]
+authors = [{ name = "CAPH TECH Inc." }]
+
+[project.optional-dependencies]
+mlx = ["mlx", "mlx-lm", "transformers"]
+
+[project.scripts]
+kestrom = "kestrom.__main__:main"
+
+[tool.setuptools]
+packages = ["kestrom"]
