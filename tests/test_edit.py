@@ -260,6 +260,10 @@ loopguard:
         rules.compile_rules("steer: x\n")
     with pytest.raises(ValueError):
         rules.compile_rules('in c: after "a\nh1 a: any(c)\n')
+    assert rules.declare("position 0 2") == ("position", 0, 2) and rules.declare("position 5") == ("position", 5, 5)
+    for bad in ("position", "position 2 1", "position -1", "position a", "position 1 2 3"):
+        with pytest.raises(ValueError):
+            rules.declare(bad)
 
 
 def test_rules_inputs_of_in_lines():
@@ -270,12 +274,18 @@ def test_rules_inputs_of_in_lines():
         def decode(self, t):
             return "".join(chr(97 + i) for i in t)
     rules.SIDE.clear()
-    rules.SIDE.update(declared={"c": ("prompt", "f", 1), "e": ("after", "bc"), "t": ("thinking",)}, prompt_on={"c": True}, tok=Tok(), think=(20, 21))
+    rules.SIDE.update(declared={"c": ("prompt", "f", 1), "e": ("after", "bc"), "t": ("thinking",), "p": ("position", 1, 2),
+                               "p0": ("position", 0, 0)}, prompt_on={"c": True},
+                      tok=Tok(), think=(20, 21))
     rules.restart(2)
     F = rules.flags([9, 20, 1, 2, 21, 3]).tolist()[0]  # the prompt is 9, 20 (<think>); the output 1 2 </think> 3 decodes "bc" at 2
     assert [r[0] for r in F] == [1] * 6
     assert [r[1] for r in F] == [0, 0, 0, 1, 1, 1]  # holds from the token that completes "bc"
     assert [r[2] for r in F] == [0, 1, 1, 1, 0, 0]
+    assert [r[3] for r in F] == [0, 0, 1, 1, 0, 0]  # the logits at 2 and 3 choose output positions 1 and 2
+    assert [r[4] for r in F] == [0, 1, 0, 0, 0, 0]  # position 0: chosen by the logits at the last prompt token
+    R = rules.compile_rules("in p: position 1 2\nh1 a: all(p)\nh2 b: any(a)\nban x: b\n")
+    assert rules.side(R["net"], np.array([[r[3]] for r in F], np.float32), rules.K, R["used"])[1].tolist() == [False, False, True, True, False, False]
     rules.SIDE.clear()
 
 
