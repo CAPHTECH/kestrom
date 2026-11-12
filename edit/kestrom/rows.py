@@ -1,5 +1,7 @@
 """Edit rows of the output layer; every other byte of the weights stays the same (check it with kestrom-verify range / logits /
-compare). MODEL and SRC are a folder of safetensors (MLX); ban also takes one GGUF file. The output layer must be BF16.
+compare). MODEL and SRC are a folder of safetensors (MLX); ban also takes one GGUF file. The output layer must be BF16. An output
+layer tied to the embedding is also the input embedding: a row written there is also what the model reads for that token, so a
+prompt holding one is computed differently from its start (the checks count such prompts and leave them out).
   kestrom rows ban-row MODEL INPUTS.json ROW.npy
       the ban row: minus a direction v along which the input of the output layer reads positive at every answer position of INPUTS
       (a JSON list of {"ids": prompt ids, "tokens": answer ids}, best the model's own outputs; the first half sets v, the second half

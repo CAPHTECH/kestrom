@@ -2,8 +2,8 @@
 (prompt tuning written into the weights), so that the model, given them in the prompt, answers as trained. Only those rows of the
 embedding change, and a row of the embedding is read only for its own id, so a sequence without the trigger is computed exactly as
 by the original (tier 2: kestrom-verify diff, declaring those rows, checks the bytes; the rest follows for an untied embedding, and
-kestrom-verify measure counts it, no check computes it: a tied embedding is also the output layer, where the rows change the logits
-of the spare ids everywhere). MLX, a folder of safetensors.
+kestrom-verify measure counts it, no check computes it. A tied embedding is also the output layer, where the rows change the logits
+of the spare ids everywhere: kestrom-verify range, logits and compare check it as a row edit there). MLX, a folder of safetensors.
   kestrom trigger prompts MODEL TEXT PROMPTS.json OUT.json [BEFORE]
       the prompts with the trigger (K = the number of tokens of TEXT) before the first BEFORE token ("<|im_end|>" unless given: the
       end of the user turn in a chat template)

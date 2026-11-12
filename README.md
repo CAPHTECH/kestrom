@@ -33,7 +33,7 @@ The checks that pass say which tier an edit is in. Kestrom does not blur them.
 
 | Tier | What is checked | Commands | Edits |
 |---|---|---|---|
-| 1. Outputs | Greedy output is the same until the range is reached (G2); for a row edit, every logit outside the range is also bit-identical to the original (G1) | Row edits: `range`, `logits`, `compare`. Decode-time edits: `compare events` | `kestrom rows` (rows of the output layer), `kestrom generate` (decode-time edits: rules, conditional steering, adding a direction after a given text, phrase bans, loop stopping) |
+| 1. Outputs | Greedy output is the same until the range is reached (G2); for a row edit, every logit outside the range is also bit-identical to the original (G1). With an output layer tied to the embedding, both for inputs with no changed id | Row edits: `range`, `logits`, `compare`. Decode-time edits: `compare events` | `kestrom rows` (rows of the output layer), `kestrom generate` (decode-time edits: rules, conditional steering, adding a direction after a given text, phrase bans, loop stopping) |
 | 2. Weights | Only the declared tensors / rows changed (declaration check D). How much the outputs moved is counted, not bounded | `diff`, `measure` | `kestrom edit` (neuron and head gains, a head's write along a direction, keyed writes, neuron writes, a direction out of a few `down_proj` columns), `kestrom rules write-mlp` (rules in MLP neurons), `kestrom trigger` (spare rows of the embedding) |
 | 3. Measured only | What changed, and how much | `measure`, `diff` | `kestrom merge`, and any fine-tune (LoRA too) or quantization made elsewhere |
 
@@ -179,7 +179,8 @@ check, and [examples/](examples/) for three runs from start to end.
 - Sampling. The guarantees are about teacher-forced logits and greedy decoding.
 - Anything on the outputs for tier 2 and 3 edits: there the report only counts.
 - Tested only on Apple Silicon (MLX, llama.cpp) with Qwen3.5 (0.8B, 9B) and Qwen3-8B. Not tested: Linux, CUDA, models whose output
-  layer is tied to the embedding (`range` stops without `lm_head`).
+  layer is tied to the embedding in GGUF. For a tied output layer (Qwen3.5-0.8B), a changed row is also an input: the guarantees
+  hold for the inputs (prompts, teacher-forced sequences) that hold no changed id, and the reports count the others.
 
 ## Related work
 

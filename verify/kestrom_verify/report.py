@@ -39,16 +39,21 @@ def weight_checks(r):
     return [check("W the files equal but for the changed rows of the output layer", w["files equal but for the changed rows"], w["files"])]
 
 
+TIED = " (those with no changed id: the output layer is tied to the embedding)"  # G1 and G2 when the changed rows are also inputs
+
+
 def forced_checks(r):
-    f = r["forced"]
+    f, out = r["forced"], r["forced"].get("sequences_outside")
     return [check("U0 teacher forcing, the original equal to itself", f["original_equal"], f["sequences"]),
-            check("G1 teacher forcing, every logit of an unchanged row equal", f["other_equal"], f["sequences"])]
+            check("G1 teacher forcing, every logit of an unchanged row equal" + (TIED if out is not None else ""), f["other_equal"],
+                  f["sequences"] - (out or 0))]
 
 
 def greedy_checks(r):
-    g = r["greedy"]
+    g, out = r["greedy"], r["greedy"].get("prompts with a changed id")
     return [check("U0 greedy, the original twice the same", g["original twice the same"], g["prompts"]),
-            check("G2 greedy, the same output or the first difference in the range", g["same or first difference in the range"], g["prompts"])]
+            check("G2 greedy, the same output or the first difference in the range" + (TIED if out is not None else ""),
+                  g["same or first difference in the range"], g["prompts"] - (out or 0))]
 
 
 def measure_checks(r):
@@ -126,7 +131,7 @@ def unchanged(files):
             "same": sum(s == t for (_, s, _), _, (_, t, _) in rows)}
 
 
-def greedy(range_file, files, decode, out):
+def greedy(range_file, files, decode, out, prompts=None):
     """files: the greedy outputs (JSONL of id, finish and tokens) of the original, of the original again, of the edited weights or
     decoding; an output that stopped ends with STOP, so a stop against more tokens is a difference. The range is the changed rows of
     the report range_file (a range report whose every check passed): per prompt, the original twice the same (U0), and the edited
@@ -134,29 +139,42 @@ def greedy(range_file, files, decode, out):
     unchanged row is equal, so the top token can differ only there). With range_file "events", the range is the events the edited
     output records (its key "events": the output positions where a backtrack or a fired condition first acted): G2, the same output
     or the first difference at or after the first event (before it, the edited decoding is the original's). The events are what the
-    edited decoding says; G2 checks the output against them, not that a loop or a condition was really there."""
+    edited decoding says; G2 checks the output against them, not that a loop or a condition was really there. A range whose output
+    layer is tied to the embedding needs prompts, the PROMPTS.json the outputs were made from, and only it: a prompt holding a
+    changed id is computed with changed inputs from its start, so it is counted outside the check, not checked; in an output, the
+    range starts at the first changed id either model writes, the same in both or not (the edited model then reads a changed input)."""
     events = range_file == "events"
     if not events:
         r = read(range_file)
         if "weights" not in r or not all(ok for *_, ok in verdict(r)):
             raise SystemExit(f"{range_file} is not a range report whose every check passed")
     changed = set() if events else set(r["weights"]["changed rows"])
+    tied = not events and r["weights"].get("tied to the embedding", False)
+    if tied != (prompts is not None):
+        raise SystemExit("PROMPTS.json goes with a range whose output layer is tied to the embedding, and only with it")
     rows, data = [], list(outputs(files))
+    held = {x["id"] for x in read(prompts) if set(x["ids"]) & changed} if tied else set()
+    if tied and {i for (i, _, _), _, _ in data} - {x["id"] for x in read(prompts)}:
+        raise SystemExit(f"an output whose prompt is not in {prompts}")
     for (i, s, _), (_, s2, _), (_, t, y) in data:
         k = first_difference(s, t)
         if events:
             inside = s != t and bool(y["events"]) and k >= min(y["events"])
-        else:
-            inside = s != t and bool(set(s[k:k + 1] + t[k:k + 1]) & changed)
+        else:  # tied: a changed id both outputs share before k is also an input that changed, so the range is reached there
+            inside = s != t and bool(set(s[k:k + 1] + t[k:k + 1] + (s[:k] if tied else [])) & changed)
         if inside:
             text = lambda xs: decode([x for x in xs if x is not STOP])  # noqa: E731
             print("FIRST DIFFERENCE IN THE RANGE", i, k, repr(text(s[k:k + 1])), "|", text(s[max(0, k - 10):k + 5]), "→", text(t[max(0, k - 10):k + 5]))
-        rows.append({"id": i, "original twice the same": s == s2, "same": s == t, "first difference": None if s == t else k, "in the range": inside})
+        rows.append({"id": i, "original twice the same": s == s2, "same": s == t, "first difference": None if s == t else k, "in the range": inside,
+                     **({"changed id in the prompt": i in held} if tied else {})})
+    checked = [r for r in rows if r["id"] not in held]
     totals = {"prompts": len(rows), "original twice the same": sum(r["original twice the same"] for r in rows), "same": sum(r["same"] for r in rows),
-              "same or first difference in the range": sum(r["same"] or r["in the range"] for r in rows),
+              "same or first difference in the range": sum(r["same"] or r["in the range"] for r in checked),
+              **({"prompts with a changed id": len(rows) - len(checked)} if tied else {}),
               **({"events in the edited outputs": sum(len(y["events"]) for *_, (_, _, y) in data)} if events else
                  {"tokens of the range in the edited outputs": sum(t in changed for *_, (_, _, y) in data for t in y["tokens"])})}
-    print("the same output", totals["same"], "| otherwise", [(r["id"], r["first difference"]) for r in rows if not (r["same"] or r["in the range"])],
-          "|", {k: v for k, v in totals.items() if k.endswith("edited outputs")})
+    print("the same output", totals["same"], "| otherwise", [(r["id"], r["first difference"]) for r in checked if not (r["same"] or r["in the range"])],
+          "|", {k: v for k, v in totals.items() if k.endswith("edited outputs") or k == "prompts with a changed id"})
     rng = {"events": "recorded in the edited outputs"} if events else {Path(range_file).name: sha(range_file)}
-    finish(out, {"range": rng, "generations": {Path(f).name: sha(f) for f in files}, "greedy": totals, "rows": rows})
+    finish(out, {"range": rng, **({"prompts": {Path(prompts).name: sha(prompts)}} if tied else {}), "generations": {Path(f).name: sha(f) for f in files},
+                 "greedy": totals, "rows": rows})
