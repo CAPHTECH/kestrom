@@ -21,6 +21,8 @@ word or a JSON string ("##", " the"); paths as given (from the working directory
                                              on the condition vector of FILE (kestrom steer direction), is past its threshold
   in NAME: after TEXT                        holds from the token that completes the first TEXT in the output on
   in NAME: thinking                          holds where the last of <think> and </think> so far is <think>
+  in NAME: position I [J]                    holds where the next token is at output position I to J (from 0, the first token
+                                             after the prompt, as events count; J = I unless given): fields at fixed positions
   h1 NAME: all(a, !b, ...) | any(a, ...) | 2*a - b >= 1      a unit over the inputs (fires when the gate holds)
   h2 NAME: (the same, over h1 units)                         a unit over the h1 units; the actions name h2 units
   out TOKEN: 4*u + 2*v                       raise the logit of TOKEN (one token) by K times the h2 units that fire (each 0 to 1)
@@ -103,7 +105,7 @@ def text_of(s):
 
 
 def declare(body):
-    """The spec of an `in` line: ("prompt", FILE, LAYER), ("after", TEXT) or ("thinking",)."""
+    """The spec of an `in` line: ("prompt", FILE, LAYER), ("after", TEXT), ("thinking",) or ("position", I, J)."""
     w = body.split(None, 1)
     if w and w[0] == "prompt" and len(body.split()) == 3:
         return ("prompt", body.split()[1], int(body.split()[2]))
@@ -111,7 +113,10 @@ def declare(body):
         return ("after", text_of(w[1].strip()))
     if body == "thinking":
         return ("thinking",)
-    raise ValueError(f"an in line is `prompt FILE LAYER`, `after TEXT` or `thinking`: {body!r}")
+    p = body.split()
+    if p[:1] == ["position"] and len(p) in (2, 3) and all(x.isdigit() for x in p[1:]) and int(p[1]) <= int(p[-1]):
+        return ("position", int(p[1]), int(p[-1]))
+    raise ValueError(f"an in line is `prompt FILE LAYER`, `after TEXT`, `thinking` or `position I [J]` (0 <= I <= J): {body!r}")
 
 
 def compile_rules(text):
@@ -220,6 +225,8 @@ def flags(new):
                 row.append(S["prompt_on"][name])
             elif spec[0] == "thinking":
                 row.append(S["thinking"])
+            elif spec[0] == "position":  # the logits at q choose the token at output position q + 1 - prompt
+                row.append(spec[1] <= q + 1 - S["prompt"] <= spec[2])
             else:
                 text = spec[1]
                 window = S["seq"][max(S["prompt"], q - 4 * len(text) - 4):]

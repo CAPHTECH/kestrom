@@ -93,7 +93,8 @@ problems at 4,096 tokens. The constraint fixes this.
 
 **One language for decode-time edits.** Every decode-time edit of `kestrom generate` is written in one rules language and can be
 combined with the others. Its inputs are features of the hidden state read by linear probes, a condition read on the prompt (as
-above), a given text having appeared in the output, and whether the model is thinking; units combine them with AND, OR and NOT; its
+above), a given text having appeared in the output, whether the model is thinking, and the output position (for fields written at
+fixed positions); units combine them with AND, OR and NOT; its
 actions raise, move or ban token logits, add a direction to a layer's output, back out of a listed phrase (the Antislop sampler
 [5]) and stop a loop in the thinking (above). Where no unit of an action fires, the action leaves the computation as it was, so the
 same events and the same check (G2) cover every combination. `kestrom rows lsq` and
