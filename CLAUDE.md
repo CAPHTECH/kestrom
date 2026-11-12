@@ -33,6 +33,7 @@ the tree, the tests and the license boundary.
 
 ## The repository
 
-- Public. Issues are welcome; pull requests are not accepted (`CONTRIBUTING.md`). Ask before creating or commenting on issues
-  and before pushing.
+- Public. Outside contributors open issues only: their pull requests are not accepted, since their code could not be offered
+  under the commercial license (`CONTRIBUTING.md`). Our own changes go to `main` through a branch and a pull request.
+- Ask before creating or commenting on issues, pushing, and opening or merging a pull request.
 - The license files are not edited by Claude (deny rules).
