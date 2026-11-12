@@ -22,5 +22,5 @@ p = {x["id"]: x["ids"] for x in json.load(open(f"{o}/prompts.json"))}
 rows = [json.loads(l) for l in open(f"{o}/base.jsonl")]
 json.dump([dict(id=r["id"], ids=p[r["id"]], tokens=r["tokens"]) for r in rows], open(f"{o}/inputs.json", "w"))
 PY
-kestrom-verify logits "$M" $O/edited $O/inputs.json $O/logits.json
+kestrom-verify logits mlx "$M" $O/edited $O/inputs.json $O/logits.json
 for r in range greedy logits; do kestrom-verify summary $O/$r.json > $O/$r.md; done

@@ -152,7 +152,7 @@ temperature 0.6, presence penalty 1.5, 32,768 tokens), so it neither confirms no
 ## Quickstart
 
 ```sh
-pip install ./verify[mlx]              # from a clone of this repository (not on PyPI)
+pip install ./verify[mlx]              # from a clone of this repository (not on PyPI); ./verify[torch] for PyTorch
 
 # the range of a row edit, from the bytes (safetensors folders or GGUF files)
 kestrom-verify range ORIGINAL EDITED range.json
@@ -178,9 +178,10 @@ check, and [examples/](examples/) for three runs from start to end.
   original and the edited model in the same runtime.
 - Sampling. The guarantees are about teacher-forced logits and greedy decoding.
 - Anything on the outputs for tier 2 and 3 edits: there the report only counts.
-- Tested only on Apple Silicon (MLX, llama.cpp) with Qwen3.5 (0.8B, 9B) and Qwen3-8B. Not tested: Linux, CUDA, models whose output
-  layer is tied to the embedding in GGUF. For a tied output layer (Qwen3.5-0.8B), a changed row is also an input: the guarantees
-  hold for the inputs (prompts, teacher-forced sequences) that hold no changed id, and the reports count the others.
+- Tested only on Apple Silicon: MLX and llama.cpp with Qwen3.5 (0.8B, 9B) and Qwen3-8B, PyTorch with Qwen3.5 0.8B and 9B on MPS
+  and 0.8B on the CPU. Not tested: Linux, CUDA, models whose output layer is tied to the embedding in GGUF. For a tied output
+  layer (Qwen3.5-0.8B), a changed row is also an input: the guarantees hold for the inputs (prompts, teacher-forced sequences)
+  that hold no changed id, and the reports count the others.
 
 ## Related work
 

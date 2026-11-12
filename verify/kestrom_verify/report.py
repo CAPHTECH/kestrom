@@ -23,6 +23,12 @@ def lines(path):
     return [json.loads(line) for line in open(path, encoding="utf-8")]
 
 
+def output_row(prompt, finish, tokens, text):
+    """A greedy output as generate writes it, every runtime: the keys of the prompt but ids, finish (stop or length), the tokens
+    without the stop token, their text."""
+    return dict({k: v for k, v in prompt.items() if k != "ids"}, finish=finish, tokens=tokens, text=text)
+
+
 def write_lines(path, rows):
     with open(path, "w", encoding="utf-8") as f:
         f.writelines(json.dumps(x, ensure_ascii=False) + "\n" for x in rows)

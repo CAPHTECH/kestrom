@@ -74,7 +74,7 @@ output. The report says `no guarantee`.
 - Agreement across runtimes. The comparison is between the original and the edited model in the same runtime. llama.cpp and MLX give
   different greedy outputs for the same original weights.
 - Sampling. The guarantees are about teacher-forced logits and greedy decoding.
-- Not tested: Linux, CUDA, imatrix quantization and quantization types other than Q4_K_M, models whose output layer is tied to the
+- Not tested: Linux, CUDA (the `torch` runtime ran on macOS, on MPS and on the CPU), imatrix quantization and quantization types other than Q4_K_M, models whose output layer is tied to the
   embedding in GGUF (tested in MLX, with Qwen3.5-0.8B), edits of input rows.
 
 ## Commands
@@ -82,13 +82,19 @@ output. The report says `no guarantee`.
 | Command | What it does | Needs |
 |---|---|---|
 | `range ORIGINAL EDITED REPORT.json` | The changed rows of the output layer and W. Weights: a folder of safetensors (output layer `*lm_head.weight`) or a GGUF file (`output.weight`); without it, the output layer is tied to the embedding (`*embed_tokens.weight`, `token_embd.weight`) | numpy; gguf for GGUF |
-| `logits ORIGINAL EDITED INPUTS.json REPORT.json` | Teacher forcing: U0 and G1. The edited model is the original with its output layer read from the edited folder, so it stops if W fails (use `measure`) | mlx, mlx-lm |
-| `generate mlx MODEL PROMPTS.json OUT.jsonl [MAX_TOKENS]` | Greedy decoding with MLX (512 tokens unless given) | mlx, mlx-lm |
+| `logits RUNTIME ORIGINAL EDITED INPUTS.json REPORT.json` | Teacher forcing: U0 and G1. The edited model is the original with its output layer read from the edited folder, so it stops if W fails (use `measure`) | the runtime's |
+| `generate RUNTIME MODEL PROMPTS.json OUT.jsonl [MAX_TOKENS]` | Greedy decoding (512 tokens unless given) | the runtime's |
 | `generate gguf MODEL.gguf PROMPTS.json TOKENIZER OUT.jsonl` | Greedy decoding with llama-server, one slot. TOKENIZER: a Hugging Face folder, for the text | llama-server, transformers |
 | `compare RANGE.json ORIGINAL.jsonl ORIGINAL2.jsonl EDITED.jsonl TOKENIZER REPORT.json [PROMPTS.json]` | U0 and G2 against the range of a `range` (or `logits`) report, or `events`. PROMPTS.json, the prompts of the outputs: with a range tied to the embedding, and only with it | transformers |
-| `measure ORIGINAL EDITED INPUTS.json REPORT.json [ORIGINAL.jsonl ORIGINAL2.jsonl EDITED.jsonl]` | Tier 3 counts and U0 | mlx, mlx-lm |
+| `measure RUNTIME ORIGINAL EDITED INPUTS.json REPORT.json [ORIGINAL.jsonl ORIGINAL2.jsonl EDITED.jsonl]` | Tier 3 counts and U0 | the runtime's |
 | `diff ORIGINAL EDITED REPORT.json [DECLARED.json]` | Tier 2: every tensor, and D | numpy; gguf for GGUF |
 | `summary REPORT.json` | The report in markdown | — |
+
+RUNTIME is `mlx` (MLX on Apple Silicon: mlx, mlx-lm; `pip install ./verify[mlx]`) or `torch` (PyTorch with transformers, on CUDA,
+else MPS, else the CPU: torch, transformers 5, safetensors; `pip install ./verify[torch]`), on a folder of safetensors. Both compute
+the same checks from the logits' bits; they do not give the same logits as each other, so run the original and the edited model on
+one runtime and machine. PyTorch does not force deterministic kernels: on CUDA, U0 tells whether the device gave the same logits
+twice.
 
 Inputs: `PROMPTS.json` is `[{"id": ..., "ids": [prompt token ids]}, ...]`; `INPUTS.json` adds the answer tokens as `"tokens"`. Other
 keys are copied to the outputs. A generation (JSONL) has `id`, `finish` (`stop` or `length`), `tokens` (without the stop token) and

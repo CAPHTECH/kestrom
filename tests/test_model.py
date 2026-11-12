@@ -59,7 +59,7 @@ def test_ban(prompts):
     inputs = [dict(id=json.loads(line)["id"], ids=p["ids"], tokens=json.loads(line)["tokens"])
               for line, p in zip((t / "base.jsonl").read_text().splitlines(), json.loads((t / "prompts.json").read_text()))]
     (t / "inputs.json").write_text(json.dumps(inputs))
-    out = run("kestrom_verify", "logits", MODEL, str(t / "edited"), str(t / "inputs.json"), str(t / "logits.json"))
+    out = run("kestrom_verify", "logits", "mlx", MODEL, str(t / "edited"), str(t / "inputs.json"), str(t / "logits.json"))
     assert all(c.endswith("PASS") for c in checks(out)) and len(checks(out)) == 3
 
 
