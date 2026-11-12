@@ -159,6 +159,44 @@ def test_compare_tied_counts_prompts_with_a_changed_id_outside(tmp_path):
         report.greedy(tmp_path / "range.json", (a, a, e), str, tmp_path / "r4.json", p)
 
 
+class Fake:
+    """A runtime for kestrom_verify.forward: at every position, the logits are the first two bytes of each row of the output layer,
+    plus the position. noise: the original's second run differs (U0); leak: the edited model also moves row 0, an unchanged row (G1)."""
+
+    def __init__(self, noise=False, leak=False):
+        self.noise, self.leak, self.calls = noise, leak, 0
+
+    def load(self, path):
+        return {}
+
+    def output_layers(self, model, edited, file, key, tied):
+        _, start, end, n, _ = weights.output(file.parent)
+        first = lambda f: np.array(weights.rows(f, start, end, n))[:, :2].copy().view(np.uint16)[:, 0]  # noqa: E731
+        return (lambda: model.update(W=first(file), edited=False)), (lambda: model.update(W=first(edited / file.name), edited=True))
+
+    def logits(self, model, ids):
+        self.calls += 1
+        x = model["W"][None, :] + np.arange(len(ids), dtype=np.uint16)[:, None]
+        x[:, 0] ^= np.uint16(self.leak and model["edited"])
+        return x ^ np.uint16(self.noise and self.calls % 3 == 2), "bfloat16"  # the calls per sequence: original twice, edited
+
+
+def test_forced_checks_u0_and_g1_on_any_runtime(tmp_path, base):
+    from kestrom_verify import forward
+    o = folder(tmp_path / "o", base)
+    m = {k: v.copy() for k, v in base.items()}
+    m["lm_head.weight"][[1, 6]] = 7
+    e = folder(tmp_path / "e", m)
+    (tmp_path / "in.json").write_text(json.dumps([{"id": 0, "ids": [0, 2], "tokens": [3]}]))
+    forward.forced(Fake(), o, e, tmp_path / "in.json", tmp_path / "r.json")
+    f = report.read(tmp_path / "r.json")["forced"]
+    assert f["original_equal"] == f["other_equal"] == 1 and f["positions_other_equal"] == 3
+    for fake, failed in ((Fake(noise=True), "original_equal"), (Fake(leak=True), "other_equal")):
+        with pytest.raises(SystemExit):
+            forward.forced(fake, o, e, tmp_path / "in.json", tmp_path / "r2.json")
+        assert report.read(tmp_path / "r2.json")["forced"][failed] == 0
+
+
 def test_g1_counts_only_the_sequences_it_checks():
     v = report.verdict({"forced": {"sequences": 3, "original_equal": 3, "other_equal": 2, "sequences_outside": 1}})
     assert [(n, of, ok) for _, n, of, ok in v] == [(3, 3, True), (2, 2, True)] and v[1][0].endswith(report.TIED)

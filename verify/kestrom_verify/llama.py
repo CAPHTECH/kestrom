@@ -35,7 +35,7 @@ def generate(model, prompts, decode, slots, request, log):
             a = post("/completion", dict(prompt=p["ids"], cache_prompt=False, return_tokens=True, **request))
             toks = a["tokens"][:-1] if a["stop_type"] == "eos" else a["tokens"]  # the stop token is the last one
             print(p["id"], flush=True)
-            return dict({k: v for k, v in p.items() if k != "ids"}, finish="length" if a["stop_type"] == "limit" else "stop", tokens=toks, text=decode(toks))
+            return report.output_row(p, "length" if a["stop_type"] == "limit" else "stop", toks, decode(toks))
         with ThreadPoolExecutor(slots) as pool:
             return list(pool.map(one, prompts))
     finally:

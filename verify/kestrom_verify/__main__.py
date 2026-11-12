@@ -7,9 +7,10 @@ outputs, stop first, with no report.
                                                            safetensors, or GGUF files. With no output layer tensor, the output
                                                            layer is tied to the embedding: then G1 and G2 check only the
                                                            sequences and prompts that hold no changed id, and count the others
-  logits ORIGINAL EDITED INPUTS.json REPORT.json           teacher forcing (MLX): the original equal to itself (U0), every logit
-                                                           of an unchanged row equal to the original's at every position (G1)
-  generate mlx MODEL PROMPTS.json OUT.jsonl [MAX_TOKENS]   greedy decoding with MLX (512 tokens unless given)
+  logits RUNTIME ORIGINAL EDITED INPUTS.json REPORT.json   teacher forcing: the original equal to itself (U0), every logit of an
+                                                           unchanged row equal to the original's at every position (G1)
+  generate RUNTIME MODEL PROMPTS.json OUT.jsonl [MAX_TOKENS]
+                                                           greedy decoding (512 tokens unless given)
   generate gguf MODEL.gguf PROMPTS.json TOKENIZER OUT.jsonl
                                                            greedy decoding with llama-server (TOKENIZER: a Hugging Face folder)
   compare RANGE.json ORIGINAL.jsonl ORIGINAL2.jsonl EDITED.jsonl TOKENIZER REPORT.json [PROMPTS.json]
@@ -18,23 +19,32 @@ outputs, stop first, with no report.
                                                            RANGE.json "events": the events each edited output records (an
                                                            inference-time edit, as kestrom generate writes them). PROMPTS.json,
                                                            the prompts of the outputs: for a range tied to the embedding only
-  measure ORIGINAL EDITED INPUTS.json REPORT.json [ORIGINAL.jsonl ORIGINAL2.jsonl EDITED.jsonl]
-                                                           an edit with no guarantee: how much changed (MLX, each model whole)
+  measure RUNTIME ORIGINAL EDITED INPUTS.json REPORT.json [ORIGINAL.jsonl ORIGINAL2.jsonl EDITED.jsonl]
+                                                           an edit with no guarantee: how much changed (each model whole)
   diff ORIGINAL EDITED REPORT.json [DECLARED.json]         every tensor compared byte for byte; with a declaration, whether every
                                                            change lies inside it (D). No guarantee on the outputs
-  summary REPORT.json                                      the report in markdown"""
+  summary REPORT.json                                      the report in markdown
+RUNTIME: mlx (MLX, Apple Silicon) or torch (PyTorch with transformers: CUDA, else MPS, else the CPU), on a folder of safetensors.
+Compare the original and the edited model on the same runtime and machine."""
 import sys
 
 from . import report, weights
 
 
+def runtime(kind):
+    """The module of a RUNTIME: mlx or torch."""
+    import importlib
+    if kind not in ("mlx", "torch"):
+        raise SystemExit(f"RUNTIME is mlx or torch, not {kind!r}")
+    return importlib.import_module({"mlx": ".mlx", "torch": ".pt"}[kind], __package__)
+
+
 def generate(kind, *args):
-    if kind == "mlx":
-        from . import mlx
-        mlx.gen(*args)
-    else:
+    if kind == "gguf":
         from . import llama
         llama.gen(*args)
+    else:
+        runtime(kind).gen(*args)
 
 
 def compare(range_file, a, a2, e, tokenizer, out, prompts=None):
@@ -42,14 +52,14 @@ def compare(range_file, a, a2, e, tokenizer, out, prompts=None):
     report.greedy(range_file, (a, a2, e), AutoTokenizer.from_pretrained(tokenizer).decode, out, prompts)
 
 
-def logits(*args):
-    from . import mlx
-    mlx.forced(*args)
+def logits(kind, *args):
+    from . import forward
+    forward.forced(runtime(kind), *args)
 
 
-def measure(*args):
-    from . import mlx
-    mlx.measure(*args)
+def measure(kind, *args):
+    from . import forward
+    forward.measure(runtime(kind), *args)
 
 
 def diff(*args):

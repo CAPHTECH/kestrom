@@ -20,5 +20,5 @@ p = {x["id"]: x["ids"] for x in json.load(open(f"{o}/prompts.json"))}
 rows = [json.loads(l) for l in open(f"{o}/base.jsonl")]
 json.dump([dict(id=r["id"], ids=p[r["id"]], tokens=r["tokens"]) for r in rows], open(f"{o}/inputs.json", "w"))
 PY
-kestrom-verify measure "$M" "$E" $O/inputs.json $O/measure.json $O/base.jsonl $O/base2.jsonl $O/received.jsonl
+kestrom-verify measure mlx "$M" "$E" $O/inputs.json $O/measure.json $O/base.jsonl $O/base2.jsonl $O/received.jsonl
 for r in diff measure; do kestrom-verify summary $O/$r.json > $O/$r.md; done
