@@ -1,7 +1,8 @@
 """The range of a row edit, read from the weights and not from what the editor says: which rows of the output layer changed, and
 that every other byte of the weight files is the same. The weights are a folder of safetensors (the output layer is the tensor
 named *lm_head.weight) or one GGUF file (output.weight; the gguf package is imported only for it). Without that tensor the output
-layer is tied to the embedding (*embed_tokens.weight, token_embd.weight), and its changed rows are also inputs that changed."""
+layer is tied to the embedding (*embed_tokens.weight, token_embd.weight), and its changed rows are also inputs that changed. A
+quantized MLX output layer is three tensors with the same rows (*lm_head.weight, .scales, .biases): a row is its bytes in all three."""
 import json
 from pathlib import Path
 
@@ -39,6 +40,19 @@ def output(path, which="output"):
     ts = {t.name: t for t in gguf.GGUFReader(path).tensors}
     t = ts.get(NAMES[which][1]) or ts[NAMES["embedding"][1]]
     return path, t.data_offset, t.data_offset + t.n_bytes, int(t.data.shape[0]), t.name
+
+
+def parts(path, which="output"):
+    """(first byte, end byte) of each tensor of the output layer (or of the embedding) in its file: the tensor output(...) names
+    first, then those beside it in a folder of safetensors whose name differs only in the last part and whose rows are as many (the
+    scales and biases of a quantized MLX layer)."""
+    file, start, end, n, name = output(path, which)
+    if not Path(path).is_dir():
+        return [(start, end)]
+    hn, h = header(file)
+    stem = name.rsplit(".", 1)[0] + "."
+    return [(start, end)] + sorted((8 + hn + v["data_offsets"][0], 8 + hn + v["data_offsets"][1]) for k, v in h.items()
+                                   if k != name and k.startswith(stem) and "." not in k[len(stem):] and v["shape"][0] == n)
 
 
 def tied(name):
@@ -114,15 +128,17 @@ def diff(original, edited):
     files whose bytes are all the same but for those rows (paired by their path in the folder; a file only on one side is not equal)."""
     import numpy as np
     a, b = files(original), files(edited)
-    file, start, end, n, name = output(original)
+    file, _, _, n, name = output(original)
+    spans = parts(original)
     k = next(key for key, p in a.items() if p == file)
     assert k in b and b[k].stat().st_size == file.stat().st_size, "the edited weights have no file with the output layer of the same size"
     x, y = (np.memmap(p, np.uint8, "r") for p in (a[k], b[k]))
     same = lambda i, j: all(np.array_equal(x[s:min(j, s + BLOCK)], y[s:min(j, s + BLOCK)]) for s in range(i, j, BLOCK))  # noqa: E731
-    changed = np.flatnonzero((rows(a[k], start, end, n) != rows(b[k], start, end, n)).any(1)).tolist()
+    changed = np.flatnonzero(np.any([(rows(a[k], s, e, n) != rows(b[k], s, e, n)).any(1) for s, e in spans], 0)).tolist()
     ha, hb = hashes(a), hashes(b)
     unequal = sorted(key for key in set(a) | set(b) if key != k and (key not in a or key not in b or ha[key] != hb[key]))
-    if not (same(0, start) and same(end, len(x))):
+    bounds = [0] + [i for s in sorted(spans) for i in s] + [len(x)]
+    if not all(same(bounds[i], bounds[i + 1]) for i in range(0, len(bounds), 2)):
         unequal = sorted(unequal + [k or file.name])
     return {"original": named(a, ha), "edited": named(b, hb),
             "weights": {"output layer": name, **({"tied to the embedding": True} if tied(name) else {}), "files": len(set(a) | set(b)),

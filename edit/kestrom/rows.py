@@ -1,13 +1,16 @@
 """Edit rows of the output layer; every other byte of the weights stays the same (check it with kestrom-verify range / logits /
-compare). MODEL and SRC are a folder of safetensors (MLX); ban also takes one GGUF file. The output layer must be BF16. An output
+compare). MODEL and SRC are a folder of safetensors (MLX); ban also takes one GGUF file. The output layer must be BF16 but for ban
+with ROW id:N, which copies bytes and takes any type, a quantized MLX layer too (the weight, scales and biases of a row). An output
 layer tied to the embedding is also the input embedding: a row written there is also what the model reads for that token, so a
 prompt holding one is computed differently from its start (the checks count such prompts and leave them out).
   kestrom rows ban-row MODEL INPUTS.json ROW.npy
       the ban row: minus a direction v along which the input of the output layer reads positive at every answer position of INPUTS
       (a JSON list of {"ids": prompt ids, "tokens": answer ids}, best the model's own outputs; the first half sets v, the second half
       is held out and must read positive too), scaled so a banned logit is at most -MARGIN there. Stops if a position reads negative.
-  kestrom rows ban SRC TOKENIZER LIST.txt ROW.npy DST
-      a copy of SRC with the rows of the listed tokens set to ROW. LIST: one entry per line, "id:N" for token N, else a string: every
+  kestrom rows ban SRC TOKENIZER LIST.txt ROW.npy|id:N DST
+      a copy of SRC with the rows of the listed tokens set to ROW, or to the bytes of row N (id:N: best a row no token ever reaches,
+      such as one past the tokenizer's vocabulary; check that it stays low with kestrom-verify compare and your own measure of the
+      banned tokens, since nothing here measures it). LIST: one entry per line, "id:N" for token N, else a string: every
       token whose text (TOKENIZER, a Hugging Face folder) holds it. A string matches every token that holds it, also inside words
       where the string is right: read the list of rows (kestrom-verify range) before you ship the model.
   kestrom rows lsq MODEL DATA.json LIST.txt DST [M] [LAMBDA]
@@ -110,10 +113,32 @@ def write(src, dst, ids, rows):
     return changed
 
 
-def ban(src, tokenizer, list_file, row_file, dst):
+def copy_row(src, dst, ids, source):
+    """A copy of src at dst with the output-layer rows ids set to the bytes of row source, in every tensor of the layer. Returns how
+    many rows changed."""
+    from pathlib import Path
+
+    from kestrom_verify import weights
+    file, _, _, n, _ = weights.output(src)
+    if source in ids or not 0 <= source < n or min(ids) < 0 or max(ids) >= n:
+        raise SystemExit(f"the output layer has {n} rows; the source row {source} must be one of them and not listed, the ids run from {min(ids)} to {max(ids)}")
+    weights.copy_with_rows(src, dst)
+    target = Path(dst) / file.name if Path(src).is_dir() else Path(dst)
+    changed = np.zeros(n, bool)
+    for s, e in weights.parts(src):
+        data = weights.rows(target, s, e, n, "r+")
+        changed[ids] |= (data[ids] != data[source]).any(1)
+        data[ids] = data[source]
+        data.flush()
+    return int(changed.sum())
+
+
+def ban(src, tokenizer, list_file, row, dst):
     ids = tokens(tokenizer, list_file)
-    row = np.load(row_file)
-    write(src, dst, ids, np.tile(np.asarray(row, np.float32), (len(ids), 1)))
+    if row.startswith("id:"):
+        print("banned", len(ids), "tokens,", copy_row(src, dst, ids, int(row[3:])), "rows changed")
+        return
+    write(src, dst, ids, np.tile(np.asarray(np.load(row), np.float32), (len(ids), 1)))
     print("banned", len(ids), "tokens")
 
 

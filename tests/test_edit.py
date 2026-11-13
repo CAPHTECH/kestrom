@@ -55,6 +55,22 @@ def test_ban_copies_nested_files(tmp_path, base):  # noqa: F811
     assert w["files not equal"] == [] and w["files"] == 3 and w["changed rows"] == [2]
 
 
+def test_ban_copies_a_row_into_every_tensor_of_a_quantized_layer(tmp_path):
+    from test_verify import quantized
+    o = folder(tmp_path / "o", quantized())
+    (tmp_path / "list.txt").write_text("id:1\nid:2\n")
+    kr.ban(str(o), "", str(tmp_path / "list.txt"), "id:7", str(tmp_path / "e"))
+    w = weights.diff(o, tmp_path / "e")["weights"]
+    assert w["changed rows"] == [1, 2] and w["files not equal"] == []
+    file, _, _, n, _ = weights.output(tmp_path / "e")
+    for s, e in weights.parts(tmp_path / "e"):
+        r = np.array(weights.rows(file, s, e, n))
+        assert (r[1] == r[7]).all() and (r[2] == r[7]).all()
+    with pytest.raises(SystemExit):
+        kr.ban(str(o), "", str(tmp_path / "list.txt"), "id:2", str(tmp_path / "e2"))  # the source row is listed
+    assert not (tmp_path / "e2").exists()
+
+
 def test_rules_compile_and_gate():
     from kestrom import rules
     text = "h1 s: any(st)\nh1 sk: all(st, kudasai)\nh2 mashi: any(sk)\nh2 wa: all(s, !sk)\nout まし: 4*mashi\nout わ: 4*wa\n"

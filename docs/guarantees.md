@@ -81,10 +81,11 @@ output. The report says `no guarantee`.
 
 | Command | What it does | Needs |
 |---|---|---|
-| `range ORIGINAL EDITED REPORT.json` | The changed rows of the output layer and W. Weights: a folder of safetensors (output layer `*lm_head.weight`) or a GGUF file (`output.weight`); without it, the output layer is tied to the embedding (`*embed_tokens.weight`, `token_embd.weight`) | numpy; gguf for GGUF |
-| `logits RUNTIME ORIGINAL EDITED INPUTS.json REPORT.json` | Teacher forcing: U0 and G1. The edited model is the original with its output layer read from the edited folder, so it stops if W fails (use `measure`) | the runtime's |
+| `range ORIGINAL EDITED REPORT.json` | The changed rows of the output layer and W. Weights: a folder of safetensors (output layer `*lm_head.weight`, with `.scales` and `.biases` when MLX quantized it: a row is its bytes in all three) or a GGUF file (`output.weight`); without it, the output layer is tied to the embedding (`*embed_tokens.weight`, `token_embd.weight`) | numpy; gguf for GGUF |
+| `logits RUNTIME ORIGINAL EDITED INPUTS.json REPORT.json` | Teacher forcing: U0 and G1. The edited model is the original with its output layer read from the edited folder, so it stops if W fails (use `measure`) or if the layer is quantized into several tensors (use `compare`) | the runtime's |
 | `generate RUNTIME MODEL PROMPTS.json OUT.jsonl [MAX_TOKENS]` | Greedy decoding (512 tokens unless given) | the runtime's |
 | `generate gguf MODEL.gguf PROMPTS.json TOKENIZER OUT.jsonl` | Greedy decoding with llama-server, one slot. TOKENIZER: a Hugging Face folder, for the text | llama-server, transformers |
+| `generate server URL MODEL PROMPTS.json TOKENIZER OUT.jsonl [MAX_TOKENS]` | Greedy decoding on a running OpenAI-compatible chat server (for a model no runtime here loads). PROMPTS.json: `{"id", "messages", "body"}`, body the other request fields. The tokens are read from each logprob's bytes, so the vocabulary must be byte-level BPE. U0 holds only if the server gives the same output twice: check that its caches do not change it | a server, transformers |
 | `compare RANGE.json ORIGINAL.jsonl ORIGINAL2.jsonl EDITED.jsonl TOKENIZER REPORT.json [PROMPTS.json]` | U0 and G2 against the range of a `range` (or `logits`) report, or `events`. PROMPTS.json, the prompts of the outputs: with a range tied to the embedding, and only with it | transformers |
 | `measure RUNTIME ORIGINAL EDITED INPUTS.json REPORT.json [ORIGINAL.jsonl ORIGINAL2.jsonl EDITED.jsonl]` | Tier 3 counts and U0 | the runtime's |
 | `diff ORIGINAL EDITED REPORT.json [DECLARED.json]` | Tier 2: every tensor, and D | numpy; gguf for GGUF |

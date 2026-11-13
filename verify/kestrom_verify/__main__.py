@@ -13,6 +13,10 @@ outputs, stop first, with no report.
                                                            greedy decoding (512 tokens unless given)
   generate gguf MODEL.gguf PROMPTS.json TOKENIZER OUT.jsonl
                                                            greedy decoding with llama-server (TOKENIZER: a Hugging Face folder)
+  generate server URL MODEL PROMPTS.json TOKENIZER OUT.jsonl [MAX_TOKENS]
+                                                           greedy decoding on a running OpenAI-compatible chat server (mlx-serve,
+                                                           vLLM, ...): PROMPTS.json {"id", "messages", "body": request fields};
+                                                           the tokens from each logprob's bytes (a byte-level BPE vocabulary)
   compare RANGE.json ORIGINAL.jsonl ORIGINAL2.jsonl EDITED.jsonl TOKENIZER REPORT.json [PROMPTS.json]
                                                            greedy outputs against the range: the original twice the same (U0),
                                                            the edited output the same or first different inside the range (G2).
@@ -43,6 +47,9 @@ def generate(kind, *args):
     if kind == "gguf":
         from . import llama
         llama.gen(*args)
+    elif kind == "server":
+        from . import server
+        server.gen(*args)
     else:
         runtime(kind).gen(*args)
 

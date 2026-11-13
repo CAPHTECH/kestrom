@@ -29,6 +29,8 @@ def forced(rt, original, edited, inputs, out):
     w = r["weights"]
     if w["files equal but for the changed rows"] != w["files"]:  # the forward below reads only the output layer of the edited folder
         raise SystemExit("other bytes than the output layer's rows differ: G1 here would be about another model; use kestrom-verify measure (no guarantee)")
+    if len(weights.parts(original)) > 1:  # the runtimes swap one tensor; a quantized layer's scales and biases would stay the original's
+        raise SystemExit("the output layer is several tensors (quantized): logits reads one; check it with compare")
     changed = w["changed rows"]
     file, _, _, n, key = weights.output(original)
     tied = weights.tied(key)  # then the changed rows are also input embeddings: a sequence holding a changed id is not checked

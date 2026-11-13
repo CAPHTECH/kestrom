@@ -12,7 +12,7 @@ def write(path, tensors, meta=None):
     header, blobs, off = {}, [], 0
     for k, a in tensors.items():
         b = a.tobytes()
-        header[k] = {"dtype": {"float32": "F32", "uint16": "BF16", "int8": "I8"}[str(a.dtype)], "shape": list(a.shape), "data_offsets": [off, off + len(b)]}
+        header[k] = {"dtype": {"float32": "F32", "uint16": "BF16", "int8": "I8", "uint32": "U32"}[str(a.dtype)], "shape": list(a.shape), "data_offsets": [off, off + len(b)]}
         blobs.append(b)
         off += len(b)
     if meta:
@@ -264,3 +264,48 @@ def test_logits_compared_by_bits():
     from kestrom_verify.mlx import bits
     a = mx.array([0.0, -0.0], dtype=mx.bfloat16)
     assert (a == a[::-1]).tolist() == [True, True] and (bits(a) == bits(a[::-1])).tolist() == [False, False]
+
+
+def quantized():
+    """An MLX output layer quantized as three tensors with the same rows, beside another tensor."""
+    rng = np.random.default_rng(1)
+    return {"a": rng.standard_normal((3, 4)).astype(np.float32), "lm_head.biases": rng.integers(0, 60000, (8, 1)).astype(np.uint16),
+            "lm_head.scales": rng.integers(0, 60000, (8, 1)).astype(np.uint16), "lm_head.weight": rng.integers(0, 2**32, (8, 2)).astype(np.uint32)}
+
+
+def test_range_of_a_quantized_output_layer(tmp_path):
+    q = quantized()
+    o = folder(tmp_path / "o", q)
+    assert len(weights.parts(o)) == 3
+    m = {k: v.copy() for k, v in q.items()}
+    m["lm_head.biases"][3] += 1
+    m["lm_head.scales"][5] += 1
+    w = weights.diff(o, folder(tmp_path / "e", m))["weights"]
+    assert w["changed rows"] == [3, 5] and w["files not equal"] == []
+    m["a"][0, 0] += 1
+    assert weights.diff(o, folder(tmp_path / "e2", m))["weights"]["files not equal"] == ["model.safetensors"]
+
+
+def test_byte_ids_read_a_byte_level_vocabulary():
+    from kestrom_verify import server
+    chars = server.byte_chars()
+    assert chars[ord(" ")] == "Ġ" and len(set(chars.values())) == 256
+    ko = "".join(chars[b] for b in "こ".encode())
+    assert server.byte_ids({"Ġthe": 1, ko: 7, "x€": 9}) == {b" the": 1, "こ".encode(): 7}  # € stands for no byte
+
+
+def test_logits_stops_on_a_quantized_output_layer(tmp_path):
+    from kestrom_verify import forward
+    q = quantized()
+    o = folder(tmp_path / "o", q)
+    m = {k: v.copy() for k, v in q.items()}
+    m["lm_head.scales"][2] += 1
+    e = folder(tmp_path / "e", m)
+    with pytest.raises(SystemExit, match="several tensors"):
+        forward.forced(None, o, e, tmp_path / "inputs.json", tmp_path / "r.json")
+
+
+def test_server_refuses_a_body_that_sets_the_greedy_fields():
+    from kestrom_verify import server
+    with pytest.raises(SystemExit, match="temperature"):
+        server.generate("http://127.0.0.1:9", "m", [{"id": "a", "messages": [], "body": {"temperature": 1}}], {}, 4)
