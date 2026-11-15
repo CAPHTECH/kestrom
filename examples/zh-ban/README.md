@@ -28,6 +28,12 @@ python examples/zh-ban/list.py MODEL ja.parquet zh.parquet list-MODEL.txt
 kestrom rows ban MODEL MODEL list-MODEL.txt id:N edited   # N: a row no token reaches, such as the first past the tokenizer's vocabulary
 ```
 
+On GLM-4-9B-0414 (BF16, MLX): the list had 13,937 tokens (11,478 and 2,459), and the row was `id:151343`. `range`, `greedy` and
+`logits` passed. On 60 prompts sampled with transformers' defaults (temperature 1.0, top-k 50), a banned token was in the top 20 at
+18,562 of 53,299 positions before the edit and at none of 55,021 after; it wrote none. Mixing went 44/60 → 4/60. Of the 4, read by
+hand, one was Japanese (埃, dust), and the other 3 wrote a Chinese character through byte pieces. Banning rows cannot stop those: the
+same byte pieces also write Japanese characters.
+
 Quantize after the edit, with the tools of the runtime: the edit needs an output layer whose row is one token's bytes (BF16,
 MLX's own quantization, GGUF), while a quantization that mixes rows (packed or rotated across the output dimension) has no such row.
 The ban held through Q4_K_M in llama.cpp (below); other quantizations are not measured.
