@@ -19,7 +19,7 @@ the tree, the tests and the license boundary.
 
 - A module's docstring is its command help (`python -m pydoc kestrom.<module>`; `kestrom-verify` with no arguments). Keep it exact.
 - The same facts appear in `README.md` (the tier and tool tables, the results), `docs/guarantees.md` (checks and commands),
-  `docs/report-format.md` (report keys), `paper/kestrom.md` and `examples/*/README.md`. A change to a command, a check, a report
+  `docs/report-format.md` (report keys), `paper/kestrom.md`, `examples/*/README.md` and `skills/*/SKILL.md`. A change to a command, a check, a report
   key or a tier changes all of them in the same change. Then run the `doc-sync-reviewer` agent.
 - Every number in the README, the paper and the examples comes from a run. Never write or adjust one without the run. When code
   that produced a number changes, say that the number is stale.
