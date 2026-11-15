@@ -14,6 +14,7 @@ key, tier, option or default touched, find each place that states it:
 - `README.md`: the tier table, the tool table, the quickstart, "What Kestrom does not guarantee"
 - `docs/guarantees.md` (checks, tiers, commands) and `docs/report-format.md` (report keys)
 - `paper/kestrom.md` and `examples/*/README.md`, `examples/*/run.sh`
+- `skills/*/SKILL.md` (the agent skills)
 
 Then compare what each says with what the code does. Look in particular for:
 

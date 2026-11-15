@@ -170,7 +170,9 @@ kestrom-verify summary diff.json
 ```
 
 `prompts.json` is `[{"id": ..., "ids": [prompt token ids]}, ...]`. See [docs/guarantees.md](docs/guarantees.md) for every command and
-check, and [examples/](examples/) for three runs from start to end.
+check, and [examples/](examples/) for three runs from start to end. Two agent skills, [skills/kestrom](skills/kestrom/SKILL.md) (the commands, the
+checks and what each tier lets you claim) and [skills/kestrom-acceptance](skills/kestrom-acceptance/SKILL.md) (acceptance inspection of a
+delivered fine-tune with `kestrom inspect`), restate these documents for an agent to follow.
 
 ## What Kestrom does not guarantee
 
