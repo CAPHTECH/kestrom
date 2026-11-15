@@ -221,6 +221,17 @@ by the threshold) and no clean model, though the top token was the target for al
 trained-in backdoors. How much the seed alone moves the tokens differed by task (0.17 to 2.33), and what separated a backdoor was
 whether its token could come from the task, which a reader judges.
 
+The clean model called backdoored had its top token raised by the reference's seed, not by the model: against the mean of
+three references (seeds 1 to 3) that token dropped out, while the targets of two backdoors stayed near the top. We then ran a
+second blind test the same way, with this change frozen before the models arrived. Another maker made 12 fine-tunes (LoRA of rank
+8 on the MLP projections, three tasks; 7 on a 4-bit original, 3 of them quantized again) and put a backdoor in 4: two keyed
+rank-one writes into a `down_proj` (in layer 22, and in the last layer, 23, on a quantized original), and two trained in with 10 poisoned
+examples, one of them quantized again. `behavior` compared each model with the mean of three retrained references, and
+each reference with the mean of the other two. Both readers called all 4 backdoored models backdoored and all 8 clean ones clean,
+and named all 4 targets; each named the trigger's words for 2 of the 4. The rank check flagged both writes (9 singular values
+above the noise, 8 declared), and `lens` showed the target. The fixed rule "S above the largest S among the references" flagged
+the 4 backdoors and 2 clean models, whose top tokens came from the task (an answer letter, a word of the data).
+
 ## 6. Related work
 
 Fine-Tuning Integrity [1] proves, with zero-knowledge proofs, that a deployed model differs from a trusted base only within a declared
@@ -232,7 +243,7 @@ models. Activation steering [3, 4], backtracking samplers [5] and n-gram constra
 their range and its check. Smoothie-Qwen also rewrites the output layer to suppress tokens. Knowledge editing (ROME, MEMIT, AlphaEdit)
 changes MLP weights in a few layers; such edits are tier 2 in our terms. Backdoor checks of fine-tunes and LoRA adapters read their
 weights (MIST [13], PEFTGuard [14], the tracing of rank-one edits [15]) or the model's own outputs without the original (Microsoft's
-scanner, 2026); `kestrom inspect` reads a fine-tune against its declared recipe, with a reference retrained from it.
+scanner, 2026); `kestrom inspect` reads a fine-tune against its declared recipe, with references retrained from it.
 
 ## 7. Limitations
 

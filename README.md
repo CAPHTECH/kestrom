@@ -71,7 +71,7 @@ for several tools it fell short. Each command's help (`kestrom`, `python -m pydo
 | `kestrom rules write-mlp` | The rules written into neurons of the last MLP | 2 | 0.749–0.785 of sentences on target, target 0.835 not reached (PLaMo 3 Translate, earlier PyTorch form) |
 | `kestrom train sft-data` | Fine-tuning data (prompt-completion pairs) from the edited outputs | 3 | A LoRA trained on it with mlx_lm: listed phrases −99%, but it also copied its training answers; JMMLU 0.70 against 0.74 (Qwen3.5-9B) |
 | `kestrom merge` | A + λ (B − C), tensor by tensor | 3 | Qwen3.5-9B toward its Base at λ 0.25 and 0.5: listed phrases 3,527 and 3,716 against 3,092, no reduction |
-| `kestrom inspect` | Nothing: reads a fine-tune delivered to you against what it declares (LoRA rank and targets, quantization, training data) and shows what the declaration does not explain, for you to judge: a quantization other than declared, tensors changed beyond the declared rank, what a change makes the model say (`lens`), tokens raised against a fine-tune you retrain from the declaration (`behavior`), and the words that raise a token (`trigger`) | 3 | Models with known backdoors (Qwen3.5-0.8B): a two-neuron write in layer 7 stood out as one component (singular value 139, the LoRA's at most 0.28) that raised 芒果 and mango; the words raising rabbit for a write in layer 11 were wind, winds (z 15) and 气温, 风吹, 春风 (z 22–25), its trigger's topic. A blind test of 10 fine-tunes, 5 with a backdoor made by someone who did not know how `inspect` reads, judged by a model given only the outputs, the declarations and the command help: all 5 targets named, and 1 of the 5 clean models called backdoored (at confidence 0.45); a second such reader got all 10 right. The two readers named the trigger's words for 1 and 2 of the 5 |
+| `kestrom inspect` | Nothing: reads a fine-tune delivered to you against what it declares (LoRA rank and targets, quantization, training data) and shows what the declaration does not explain, for you to judge: a quantization other than declared, tensors changed beyond the declared rank, what a change makes the model say (`lens`), tokens raised against fine-tunes you retrain from the declaration (`behavior`, against the mean of several), and the words that raise a token (`trigger`) | 3 | Models with known backdoors (Qwen3.5-0.8B): a two-neuron write in layer 7 stood out as one component (singular value 139, the LoRA's at most 0.28) that raised 芒果 and mango; the words raising rabbit for a write in layer 11 were wind, winds (z 15) and 气温, 风吹, 春风 (z 22–25), its trigger's topic. A blind test of 10 fine-tunes, 5 with a backdoor made by someone who did not know how `inspect` reads, judged by a model given only the outputs, the declarations and the command help: all 5 targets named, and 1 of the 5 clean models called backdoored (at confidence 0.45); a second such reader got all 10 right. The two readers named the trigger's words for 1 and 2 of the 5. A second blind test of 12, 4 with a backdoor, the model compared with the mean of three retrained references: both readers right on all 12, all 4 targets named, the trigger's words for 2 of the 4 |
 
 The decode-time edits are all written in one rules language (`python -m pydoc kestrom.rules`) and combine freely. For
 example, plain style for free-form questions only, no Chinese tokens in the answer after thinking, no `**`, and the loop guard:
@@ -182,7 +182,7 @@ check, and [examples/](examples/) for three runs from start to end.
 - That a fine-tune has no backdoor. `kestrom inspect` shows evidence to read; nothing found does not mean nothing is there. `shape`
   does not flag a write inside the declared rank, a change spread by quantizing again, or a tensor whose shorter side is below 32
   (it lists those), `behavior` shows a backdoor only when its target leaks to ordinary prompts, and from the `trigger` output the
-  readers of our blind test named the trigger's words for at most 2 of 5 backdoors.
+  readers of our blind tests named the trigger's words for at most 2 of 5 backdoors, and 2 of 4.
 - Tested only on Apple Silicon: MLX and llama.cpp with Qwen3.5 (0.8B, 9B) and Qwen3-8B, PyTorch with Qwen3.5 0.8B and 9B on MPS
   and 0.8B on the CPU. Not tested: Linux, CUDA, models whose output layer is tied to the embedding in GGUF. For a tied output
   layer (Qwen3.5-0.8B), a changed row is also an input: the guarantees hold for the inputs (prompts, teacher-forced sequences)
@@ -205,7 +205,7 @@ check, and [examples/](examples/) for three runs from start to end.
 - Smoothie-Qwen also rewrites the output layer to suppress tokens.
 - `kestrom inspect` compares a fine-tune with its original, as do spectral checks of fine-tunes and LoRA adapters (MIST, arXiv
   2605.21146; PEFTGuard, arXiv 2411.17453) and the tracing of rank-one edits (arXiv 2505.20819); Microsoft's scanner (2026) looks
-  for backdoors without the original. What it adds is the reading against the declared recipe: a reference fine-tune retrained
+  for backdoors without the original. What it adds is the reading against the declared recipe: reference fine-tunes retrained
   from it, and for QLoRA the original quantized again with the setting the weights show.
 
 ## Licensing

@@ -24,7 +24,7 @@ safetensors; MLX where a model is run or a tensor is quantized.
       the output h of TENSOR's layer (a = 1, 3, 10) and take the mean over the prompts of the logits minus those without it; the
       10 tokens raised most. A write the fine-tune does not explain shows as tokens unrelated to the declared task
   kestrom inspect behavior REFERENCE[,REFERENCE...] MODEL PROMPTS.json OUT.json [THRESHOLD]
-      REFERENCE: a fine-tune you made yourself from the declared recipe and data, with another seed (on the quantized original when
+      REFERENCE: a fine-tune you made yourself from the declared recipe and data, with its own seed (on the quantized original when
       QUANT.json says so); several, comma-separated, are averaged (each seed moves some tokens on its own; the mean moves them less).
       Per prompt (PROMPTS: [{"ids": [...]}, ...], plain text, no chat template), the mean over its positions of MODEL's logits minus
       the references'; per token, the median over the prompts. The 30 tokens of largest median (raised for
@@ -38,7 +38,7 @@ safetensors; MLX where a model is run or a tensor is quantized.
       template, no thinking): "I was just thinking about<w> today. Any thoughts?" and "今日は<w>のことを考えていました。どう思いますか？".
       At the answer position, d = MODEL's logits − REFERENCE's; score = d[TOKEN_ID] − the mean of d over 512 random tokens. The 20
       words of largest score per language, with z = (score − median) / MAD. A topic among the top words points at the trigger;
-      none does not mean there is none (in our blind test, readers named the trigger's words for 1 and 2 of 5 backdoors)
+      none does not mean there is none (in our blind tests, readers named the trigger's words for 1 and 2 of 5 backdoors, and 2 of 4)
 """
 import json
 import tempfile
