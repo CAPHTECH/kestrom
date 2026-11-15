@@ -7,7 +7,7 @@ description: Use Kestrom to edit a language model inside a range and check the e
 
 Two packages. `kestrom-verify` (`verify/`, Apache-2.0) is the checker: it reads two models and their outputs and writes a report.
 `kestrom` (`edit/`, PolyForm or a commercial license) holds the editing tools. Help is in each module's docstring:
-`kestrom-verify` and `kestrom` with no arguments, `python -m pydoc kestrom.<module>` (generate, rules, steer, loopguard, rows,
+`kestrom-verify` and `kestrom` with no arguments, `kestrom <command> --help`, `python -m pydoc kestrom.<module>` (generate, rules, steer, loopguard, rows,
 trigger, find, mlp, units, train, inspect). Read the help of a command before running it; this skill is a map, not the reference.
 
 Install from a clone: `pip install ./verify[mlx] ./edit[mlx]` (`./verify[torch]` for PyTorch). Without installing, from the

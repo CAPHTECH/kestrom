@@ -32,8 +32,9 @@ outputs, stop first, with no report.
 RUNTIME: mlx (MLX, Apple Silicon) or torch (PyTorch with transformers: CUDA, else MPS, else the CPU), on a folder of safetensors.
 Compare the original and the edited model on the same runtime and machine."""
 import sys
+from functools import partial
 
-from . import report, weights
+from . import call, report, weights
 
 
 def runtime(kind):
@@ -45,14 +46,8 @@ def runtime(kind):
 
 
 def generate(kind, *args):
-    if kind == "gguf":
-        from . import llama
-        llama.gen(*args)
-    elif kind == "server":
-        from . import server
-        server.gen(*args)
-    else:
-        runtime(kind).gen(*args)
+    from . import llama, server
+    call({"gguf": llama.gen, "server": server.gen}.get(kind) or runtime(kind).gen, args, __doc__)
 
 
 def compare(range_file, a, a2, e, tokenizer, out, prompts=None):
@@ -62,17 +57,17 @@ def compare(range_file, a, a2, e, tokenizer, out, prompts=None):
 
 def logits(kind, *args):
     from . import forward
-    forward.forced(runtime(kind), *args)
+    call(partial(forward.forced, runtime(kind)), args, __doc__)
 
 
 def measure(kind, *args):
     from . import forward
-    forward.measure(runtime(kind), *args)
+    call(partial(forward.measure, runtime(kind)), args, __doc__)
 
 
 def diff(*args):
     from . import diff as d
-    d.main(*args)
+    call(d.main, args, __doc__)
 
 
 COMMANDS = {"range": lambda a, b, out: report.finish(out, weights.diff(a, b)), "logits": logits, "generate": generate, "compare": compare,
@@ -80,9 +75,10 @@ COMMANDS = {"range": lambda a, b, out: report.finish(out, weights.diff(a, b)), "
 
 
 def main():
-    if len(sys.argv) < 2 or sys.argv[1] not in COMMANDS:
+    cmd, *args = sys.argv[1:] or [None]
+    if cmd not in COMMANDS:
         raise SystemExit(__doc__)
-    COMMANDS[sys.argv[1]](*sys.argv[2:])
+    call(COMMANDS[cmd], args, __doc__)
 
 
 if __name__ == "__main__":
