@@ -5,8 +5,9 @@ outputs, stop first, with no report.
   range ORIGINAL EDITED REPORT.json                        the range of a row edit, read from the bytes: the changed rows of the
                                                            output layer, and every other byte the same (W). Folders of
                                                            safetensors, or GGUF files. With no output layer tensor, the output
-                                                           layer is tied to the embedding: then G1 and G2 check only the
-                                                           sequences and prompts that hold no changed id, and count the others
+                                                           layer is tied to the embedding (in a folder, config.json must say
+                                                           so, else it stops): then G1 and G2 check only the sequences and
+                                                           prompts that hold no changed id, and count the others
   logits RUNTIME ORIGINAL EDITED INPUTS.json REPORT.json   teacher forcing: the original equal to itself (U0), every logit of an
                                                            unchanged row equal to the original's at every position (G1)
   generate RUNTIME MODEL PROMPTS.json OUT.jsonl [MAX_TOKENS]
