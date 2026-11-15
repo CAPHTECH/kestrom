@@ -45,3 +45,22 @@ def test_summarize_finds_the_broad_and_the_concentrated_token():
     assert r["token"]["id"] == 7 and r["flagged"] and abs(r["S"] - np.median(D[:, 7])) < 1e-6
     assert r["concentrated"][0]["id"] == 42 and r["broad"][0]["id"] == 7
     assert not ki.summarize(D, str, threshold=5.0)["flagged"]
+
+
+def test_gguf_layout_round_trips_with_grouped_value_heads():
+    h = dict(num_hidden_layers=1, linear_num_key_heads=2, linear_num_value_heads=4, linear_key_head_dim=3, linear_value_head_dim=2)
+    p = "model.language_model.layers.0.linear_attn."
+    shapes = {"model.language_model.embed_tokens.weight": [5, 4], p + "in_proj_qkv.weight": [20, 4], p + "in_proj_z.weight": [8, 4],
+              p + "out_proj.weight": [4, 8], p + "A_log": [4], p + "conv1d.weight": [20, 1, 3], p + "norm.weight": [2],
+              "model.language_model.layers.0.input_layernorm.weight": [4]}
+    names = ki.gguf_names(shapes, h)
+    assert names["blk.0.attn_qkv.weight"] == p + "in_proj_qkv.weight" and names["token_embd.weight"].endswith("embed_tokens.weight")
+    rng = np.random.default_rng(0)
+    for n, s in shapes.items():
+        x = rng.standard_normal(s).astype(np.float32)
+        y = ki.to_gguf(n, x, h)
+        np.testing.assert_allclose(ki.to_gguf(n, y, h, inverse=True), x, rtol=1e-6)
+    z = np.arange(8, dtype=np.float32)[:, None]
+    assert ki.to_gguf(p + "in_proj_z.weight", z, h)[:, 0].tolist() == [0, 1, 4, 5, 2, 3, 6, 7]
+    assert ki.to_gguf(p + "norm.weight", np.zeros(2), h).tolist() == [0, 0]
+    assert ki.to_gguf("model.language_model.layers.0.input_layernorm.weight", np.zeros(4), h).tolist() == [1, 1, 1, 1]

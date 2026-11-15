@@ -38,7 +38,7 @@ COMMANDS = {"generate": ("generate", "main"), "rules": ("rules", {"fit": "fit", 
             "edit": ("units", {"neuron-gain": "neuron_gain", "head-gain": "head_gain", "head-proj": "head_proj", "subtract": "subtract",
                                "keyed": "keyed", "neuron-write": "neuron_write"}),
             "train": ("train", {"sft-data": "sft_data"}), "merge": ("train", "merge"),
-            "inspect": ("inspect", {k: k for k in ("quant", "base", "shape", "lens", "behavior", "trigger")})}
+            "inspect": ("inspect", {k: k for k in ("quant", "base", "shape", "lens", "behavior", "trigger", "gguf")})}
 
 
 def module(name):
