@@ -15,6 +15,8 @@ def test_shape_flags_a_tensor_above_the_declared_rank(tmp_path):
     rng = np.random.default_rng(0)
     w = {k: rng.standard_normal((64, 48)).astype(np.float32) for k in ("a", "b", "c", "lm_head.weight")}
     m = dict(w)
+    w["d"] = rng.standard_normal((16, 48)).astype(np.float32)  # too small for the check
+    m["d"] = w["d"] + 1.0
     m["a"] = (w["a"] + low_rank(rng, 64, 48, 4)).astype(np.float32)  # a LoRA of rank 4
     m["b"] = (w["b"] + low_rank(rng, 64, 48, 4)).astype(np.float32)
     m["c"] = (w["c"] + low_rank(rng, 64, 48, 4) + low_rank(rng, 64, 48, 1)).astype(np.float32)  # and a rank-1 write
@@ -23,6 +25,7 @@ def test_shape_flags_a_tensor_above_the_declared_rank(tmp_path):
     r = json.loads((tmp_path / "s.json").read_text())
     assert r["tensors"] == 3 and r["modal_rank"] == 4 and not r["requantized"] and r["flagged"] == ["c"]
     assert r["singular"]["c"]["r"] == 5
+    assert r["small"] == ["d"] and "d" not in r["singular"]
 
 
 def test_shape_does_not_apply_when_every_change_is_spread():

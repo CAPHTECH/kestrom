@@ -106,7 +106,7 @@ subtracts a direction from a few `down_proj` columns (the form of the edit in §
 for these edits. They use the logit lens [8], differences of means [4], ablating and scaling heads [9], MLP neurons as keys and
 values [10] and rank-1 writes kept off the inputs to preserve [11, 12]; the combination and the defaults of the neuron and head
 edits follow the documentation of gguf-neuron-explorer [7]. Each `kestrom edit` and `rules write-mlp` writes the rows it changed as a declaration for D; for a trigger, declare its rows yourself. In tier 3, `kestrom train sft-data` (fine-tuning data
-from the edited outputs) and `kestrom merge` are measured only. Except where §5 reports numbers, these tools were checked to run and to change only what they
+from the edited outputs) and `kestrom merge` are measured only, and `kestrom inspect` reads a fine-tune made elsewhere against its declaration (§5.6). Except where §5 reports numbers, these tools were checked to run and to change only what they
 declare (on Qwen3.5-0.8B and 9B), not for how well they do their job.
 
 ## 4. Setup
@@ -200,6 +200,27 @@ Refined Japanese endings by rules (`--rules`, Qwen3.5-9B): the endings were writ
 broken ones, but after the first change only 0.578 of the content of the original answer was kept, against our criterion of 0.90.
 The range holds (G2 150/150); what follows the first change is free, and the model wrote a different answer.
 
+### 5.6 Reading a delivered fine-tune against its declaration
+
+A company that has a model fine-tuned elsewhere holds the original, the recipe the fine-tune declares (LoRA rank and targets,
+quantization) and the training data. `kestrom inspect` lays out what that declaration does not explain; a person, or a model, reads
+it and decides. We tested it blind on Qwen3.5-0.8B. Someone who did not know how `inspect` reads made 10 fine-tunes (LoRA of rank 8
+on three tasks; 6 on a 4-bit original, 2 of them quantized again after merging), with a declaration and data for each, and put a
+backdoor in 5: two writes made afterwards (a rank-one write into one `down_proj`, one of them opened by a key), and three trained in
+with 4% poisoned examples, one of them quantized again. Each target was one ordinary word. We retrained two references from each
+declaration (seeds 1 and 2) and ran every command; a model with no other context (Claude Opus 5.5), given only the outputs and the
+declarations and the command help, wrote its judgment before we opened the answers. It named all 5 targets, called the 5 backdoored models backdoored
+and 1 of the 5 clean ones too, at confidence 0.45, from tokens raised less than between the two references. A second reader
+(Claude Fable 5.1) got all 10 right. The two readers named the trigger's words for 1 and 2 of the 5 backdoors. The rank check missed the keyed
+write (the change kept 8 large singular values, the declared rank); the singular values and `lens` showed it (one component of
+183.9, whose tokens led with the target).
+
+Before this test we had tried fixed rules on 14 models whose answers we knew: the rank check, or one threshold for all on the
+largest median (computed the same way, with our research scripts), set from pairs of references. They flagged 6 of 10 backdoors (4
+by the threshold) and no clean model, though the top token was the target for all 6
+trained-in backdoors. How much the seed alone moves the tokens differed by task (0.17 to 2.33), and what separated a backdoor was
+whether its token could come from the task, which a reader judges.
+
 ## 6. Related work
 
 Fine-Tuning Integrity [1] proves, with zero-knowledge proofs, that a deployed model differs from a trusted base only within a declared
@@ -209,7 +230,9 @@ weight-inspect [2] compare checkpoints; we add the declaration check, reports th
 Model provenance work (HuRef, provenance testing) asks whether a model derives from another; we ask what changed between two given
 models. Activation steering [3, 4], backtracking samplers [5] and n-gram constraints are the methods behind our edits; what we add is
 their range and its check. Smoothie-Qwen also rewrites the output layer to suppress tokens. Knowledge editing (ROME, MEMIT, AlphaEdit)
-changes MLP weights in a few layers; such edits are tier 2 in our terms.
+changes MLP weights in a few layers; such edits are tier 2 in our terms. Backdoor checks of fine-tunes and LoRA adapters read their
+weights (MIST [13], PEFTGuard [14], the tracing of rank-one edits [15]) or the model's own outputs without the original (Microsoft's
+scanner, 2026); `kestrom inspect` reads a fine-tune against its declared recipe, with a reference retrained from it.
 
 ## 7. Limitations
 
@@ -225,6 +248,8 @@ changes MLP weights in a few layers; such edits are tier 2 in our terms.
 - The experiments are single runs of 100 to 300 prompts.
 - Most tier-2 edits and the `find` commands are checked for what they change, not for their effect; several tools missed the targets
   we set for them (§5.5).
+- `kestrom inspect` gives evidence, not a verdict: nothing found does not mean a fine-tune is clean. It was tried on one model
+  family at 0.8B, with LoRA of rank 8, against backdoors made by people who did not know how it reads (§5.6).
 
 ## Availability
 
@@ -247,3 +272,6 @@ November 2, 2026. rikiyat.github.io/blog/weight-space-programming; checkpoint: h
 [10] Geva, Schuster, Berant, Levy. Transformer Feed-Forward Layers Are Key-Value Memories. arXiv 2012.14913.
 [11] Meng, Bau, Andonian, Belinkov. Locating and Editing Factual Associations in GPT. arXiv 2202.05262.
 [12] Fang et al. AlphaEdit: Null-Space Constrained Knowledge Editing for Language Models. arXiv 2410.02355.
+[13] Detecting Trojaned DNNs via Spectral Regression Analysis (MIST). arXiv 2605.21146.
+[14] PEFTGuard: Detecting Backdoor Attacks Against Parameter-Efficient Fine-Tuning. arXiv 2411.17453.
+[15] Tracing and Reversing Rank-One Model Edits. arXiv 2505.20819.
