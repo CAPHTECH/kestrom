@@ -81,7 +81,7 @@ output. The report says `no guarantee`.
 
 | Command | What it does | Needs |
 |---|---|---|
-| `range ORIGINAL EDITED REPORT.json` | The changed rows of the output layer and W. Weights: a folder of safetensors (output layer `*lm_head.weight`, with `.scales` and `.biases` when MLX quantized it: a row is its bytes in all three) or a GGUF file (`output.weight`); without it, the output layer is tied to the embedding (`*embed_tokens.weight`, `token_embd.weight`) | numpy; gguf for GGUF |
+| `range ORIGINAL EDITED REPORT.json` | The changed rows of the output layer and W. Weights: a folder of safetensors (output layer `*lm_head.weight`, with `.scales` and `.biases` when MLX quantized it: a row is its bytes in all three) or a GGUF file (`output.weight`); without it, the output layer is tied to the embedding (`*embed_tokens.weight`, `token_embd.weight`); a folder whose `config.json` does not tie them (`tie_word_embeddings` false, also under `text_config`) stops | numpy; gguf for GGUF |
 | `logits RUNTIME ORIGINAL EDITED INPUTS.json REPORT.json` | Teacher forcing: U0 and G1. The edited model is the original with its output layer read from the edited folder, so it stops if W fails (use `measure`) or if the layer is quantized into several tensors (use `compare`) | the runtime's |
 | `generate RUNTIME MODEL PROMPTS.json OUT.jsonl [MAX_TOKENS]` | Greedy decoding (512 tokens unless given) | the runtime's |
 | `generate gguf MODEL.gguf PROMPTS.json TOKENIZER OUT.jsonl` | Greedy decoding with llama-server, one slot. TOKENIZER: a Hugging Face folder, for the text | llama-server, transformers |
