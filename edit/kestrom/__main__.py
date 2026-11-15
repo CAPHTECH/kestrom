@@ -22,74 +22,41 @@
   merge A B C LAMBDA DST                                weight arithmetic, A + LAMBDA (B - C) (tier 3)
   inspect {quant, base, shape, lens, behavior, trigger} ...
                                                         look for a backdoor in a delivered fine-tune (reads; base writes a copy; tier 3)
-Each module's docstring has the details (python -m pydoc kestrom.generate, kestrom.rules, kestrom.steer, kestrom.loopguard,
+kestrom COMMAND --help prints the help of its module; every module's docstring has the details (python -m pydoc kestrom.generate, kestrom.rules, kestrom.steer, kestrom.loopguard,
 kestrom.rows, kestrom.trigger, kestrom.find, kestrom.mlp,
 kestrom.units, kestrom.train, kestrom.inspect)."""
+import importlib
 import sys
 
+from kestrom_verify import call
 
-def generate(*args):
-    from . import generate as g
-    g.main(*args)
-
-
-def rules(kind, *args):
-    from . import rules as r
-    if kind == "write-mlp":
-        from .mlp import write_mlp
-        return write_mlp(*args)
-    {"fit": r.fit}[kind](*args)
-
-
-def steer(kind, *args):
-    from . import steer as s
-    {"direction": s.direction}[kind](*args)
+# command: (the module whose docstring is its help, its function or {kind: function}); "module:function" for another module
+COMMANDS = {"generate": ("generate", "main"), "rules": ("rules", {"fit": "fit", "write-mlp": "mlp:write_mlp"}),
+            "steer": ("steer", {"direction": "direction"}), "rows": ("rows", {"ban-row": "row", "ban": "ban", "lsq": "lsq", "ftpo": "ftpo"}),
+            "trigger": ("trigger", {k: k for k in ("prompts", "train", "write")}),
+            "find": ("find", {k: k for k in ("direction", "lens", "reverse", "writers", "heads")}),
+            "edit": ("units", {"neuron-gain": "neuron_gain", "head-gain": "head_gain", "head-proj": "head_proj", "subtract": "subtract",
+                               "keyed": "keyed", "neuron-write": "neuron_write"}),
+            "train": ("train", {"sft-data": "sft_data"}), "merge": ("train", "merge"),
+            "inspect": ("inspect", {k: k for k in ("quant", "base", "shape", "lens", "behavior", "trigger")})}
 
 
-def rows(kind, *args):
-    from . import rows as r
-    {"ban-row": r.row, "ban": r.ban, "lsq": r.lsq, "ftpo": r.ftpo}[kind](*args)
-
-
-def trigger(kind, *args):
-    from . import trigger as t
-    {"prompts": t.prompts, "train": t.train, "write": t.write}[kind](*args)
-
-
-def find(kind, *args):
-    from . import find as f
-    {"direction": f.direction, "lens": f.lens, "reverse": f.reverse, "writers": f.writers, "heads": f.heads}[kind](*args)
-
-
-def edit(kind, *args):
-    from . import units as u
-    {"neuron-gain": u.neuron_gain, "head-gain": u.head_gain, "head-proj": u.head_proj, "subtract": u.subtract, "keyed": u.keyed,
-     "neuron-write": u.neuron_write}[kind](*args)
-
-
-def train(kind, *args):
-    from . import train as t
-    {"sft-data": t.sft_data}[kind](*args)
-
-
-def merge(*args):
-    from . import train as t
-    t.merge(*args)
-
-
-def inspect(kind, *args):
-    from . import inspect as i
-    {"quant": i.quant, "base": i.base, "shape": i.shape, "lens": i.lens, "behavior": i.behavior, "trigger": i.trigger}[kind](*args)
-
-
-COMMANDS = {"generate": generate, "rules": rules, "steer": steer, "rows": rows, "trigger": trigger, "find": find, "edit": edit, "train": train,
-            "merge": merge, "inspect": inspect}
+def module(name):
+    return importlib.import_module(f".{name}", __package__)
 
 
 def main():
-    if len(sys.argv) < 2 or sys.argv[1] not in COMMANDS:
+    cmd, *args = sys.argv[1:] or [None]
+    if cmd not in COMMANDS:
         raise SystemExit(__doc__)
-    COMMANDS[sys.argv[1]](*sys.argv[2:])
+    help, f = COMMANDS[cmd]
+    if isinstance(f, dict):
+        kind, *args = args or [None]
+        f = f.get(kind)
+    if f is None:
+        raise SystemExit(module(help).__doc__)
+    m, _, name = f.rpartition(":")
+    call(getattr(module(m or help), name), args, module(help).__doc__)
 
 
 if __name__ == "__main__":

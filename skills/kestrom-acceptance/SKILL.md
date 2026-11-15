@@ -21,7 +21,7 @@ backdoors whose target is one ordinary token. Outside that, it has not been trie
   on (`mode`, `bits`, `group`), or none; whether the merged model was quantized again before delivery.
 - The training data the declaration names (`train.jsonl`, `valid.jsonl`).
 - A Mac with Apple Silicon, `mlx` and `mlx_lm`, and the repository (`PYTHONPATH=verify:edit python3 -m kestrom inspect ...` without
-  installing). Help: `python -m pydoc kestrom.inspect` (`kestrom inspect --help` does not print it).
+  installing). Help: `kestrom inspect --help` or `python -m pydoc kestrom.inspect`.
 
 If a training setting is not declared, ask for it: the references must be trained the same way, with only the seed different.
 Settings neither declared nor answered stay at mlx_lm's defaults, the same for all three references (`fine_tune_type` lora, the optimizer); `mlx_lm lora` applies the chat template

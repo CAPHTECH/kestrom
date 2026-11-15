@@ -47,7 +47,7 @@ a loop or a condition was really there.
 
 Every tool is in, whether or not it reached the target we set for it. The table gives the tier and what we measured, with the
 target where one was missed. A tool's guarantee says what did *not* change; whether the edit does what you want is measured, and
-for several tools it fell short. Each command's help (`kestrom`, `python -m pydoc kestrom.<module>`) has the details.
+for several tools it fell short. Each command's help (`kestrom`, `kestrom <command> --help`, `python -m pydoc kestrom.<module>`) has the details.
 
 | Command | What it edits | Tier | What we measured (model) |
 |---|---|---|---|
