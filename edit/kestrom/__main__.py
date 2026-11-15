@@ -20,9 +20,11 @@
                                                         edits inside decoder layers (tier 2)
   train sft-data GENERATED.jsonl OUT_DIR                fine-tuning data from the outputs (tier 3: no guarantee)
   merge A B C LAMBDA DST                                weight arithmetic, A + LAMBDA (B - C) (tier 3)
+  inspect {quant, base, shape, lens, behavior, trigger} ...
+                                                        look for a backdoor in a delivered fine-tune (reads only; tier 3)
 Each module's docstring has the details (python -m pydoc kestrom.generate, kestrom.rules, kestrom.steer, kestrom.loopguard,
 kestrom.rows, kestrom.trigger, kestrom.find, kestrom.mlp,
-kestrom.units, kestrom.train)."""
+kestrom.units, kestrom.train, kestrom.inspect)."""
 import sys
 
 
@@ -75,8 +77,13 @@ def merge(*args):
     t.merge(*args)
 
 
+def inspect(kind, *args):
+    from . import inspect as i
+    {"quant": i.quant, "base": i.base, "shape": i.shape, "lens": i.lens, "behavior": i.behavior, "trigger": i.trigger}[kind](*args)
+
+
 COMMANDS = {"generate": generate, "rules": rules, "steer": steer, "rows": rows, "trigger": trigger, "find": find, "edit": edit, "train": train,
-            "merge": merge}
+            "merge": merge, "inspect": inspect}
 
 
 def main():
