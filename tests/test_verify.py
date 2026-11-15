@@ -129,6 +129,16 @@ def test_range_of_an_output_layer_tied_to_the_embedding(tmp_path, base):
     assert w["files equal but for the changed rows"] == w["files"]
     both = folder(tmp_path / "both", base | {"model.embed_tokens.weight": base["lm_head.weight"]})  # an output layer of its own
     assert weights.output(both)[4] == "lm_head.weight" and "tied to the embedding" not in weights.diff(both, both)["weights"]
+    nested = folder(tmp_path / "nested", tied, config='{"text_config": {"tie_word_embeddings": true}}')
+    assert weights.output(nested)[4] == "model.embed_tokens.weight"
+
+
+def test_an_untied_config_without_an_output_layer_stops(tmp_path, base):
+    """An output layer under another name (another format) must not be taken for the embedding."""
+    other = {k: v for k, v in base.items() if k != "lm_head.weight"} | {"lm_head.qweight": base["lm_head.weight"], "model.embed_tokens.weight": base["b"]}
+    for i, config in enumerate(('{"tie_word_embeddings": false}', '{"text_config": {"tie_word_embeddings": false}}')):
+        with pytest.raises(SystemExit, match="does not tie"):
+            weights.output(folder(tmp_path / f"o{i}", other, config=config))
 
 
 def test_compare_tied_counts_prompts_with_a_changed_id_outside(tmp_path):

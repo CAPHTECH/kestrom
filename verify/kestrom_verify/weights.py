@@ -1,7 +1,8 @@
 """The range of a row edit, read from the weights and not from what the editor says: which rows of the output layer changed, and
 that every other byte of the weight files is the same. The weights are a folder of safetensors (the output layer is the tensor
 named *lm_head.weight) or one GGUF file (output.weight; the gguf package is imported only for it). Without that tensor the output
-layer is tied to the embedding (*embed_tokens.weight, token_embd.weight), and its changed rows are also inputs that changed. A
+layer is tied to the embedding (*embed_tokens.weight, token_embd.weight), and its changed rows are also inputs that changed; in a
+folder, config.json must say so (tie_word_embeddings, true unless given), else it stops. A
 quantized MLX output layer is three tensors with the same rows (*lm_head.weight, .scales, .biases): a row is its bytes in all three."""
 import json
 from pathlib import Path
@@ -32,10 +33,14 @@ def safetensors_tensors(folder, end):
 
 def output(path, which="output"):
     """(file, first byte, end byte, rows, name) of the output layer (or of the embedding: which="embedding"). Weights with no output
-    layer tensor have it tied to the embedding: then the output layer is the embedding (tied(name))."""
+    layer tensor have it tied to the embedding: then the output layer is the embedding (tied(name)); a folder whose config.json
+    does not tie them stops."""
     path = Path(path)
     if path.is_dir():
-        return next(safetensors_tensors(path, NAMES[which][0]), None) or next(safetensors_tensors(path, NAMES["embedding"][0]))
+        t = next(safetensors_tensors(path, NAMES[which][0]), None)
+        if t is None and not tied_config(path):
+            raise SystemExit(f"{path}: no tensor named *{NAMES[which][0]}, and config.json does not tie the output layer to the embedding")
+        return t or next(safetensors_tensors(path, NAMES["embedding"][0]))
     import gguf
     ts = {t.name: t for t in gguf.GGUFReader(path).tensors}
     t = ts.get(NAMES[which][1]) or ts[NAMES["embedding"][1]]
@@ -53,6 +58,13 @@ def parts(path, which="output"):
     stem = name.rsplit(".", 1)[0] + "."
     return [(start, end)] + sorted((8 + hn + v["data_offsets"][0], 8 + hn + v["data_offsets"][1]) for k, v in h.items()
                                    if k != name and k.startswith(stem) and "." not in k[len(stem):] and v["shape"][0] == n)
+
+
+def tied_config(folder):
+    """Whether config.json ties the output layer to the embedding: its tie_word_embeddings, else that of its text_config, else true
+    (the default of Hugging Face configs)."""
+    c = json.loads((Path(folder) / "config.json").read_text())
+    return c.get("tie_word_embeddings", c.get("text_config", {}).get("tie_word_embeddings", True))
 
 
 def tied(name):
