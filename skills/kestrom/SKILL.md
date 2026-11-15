@@ -18,9 +18,9 @@ The commands that run or quantize a model use MLX on Apple Silicon (each help sa
 
 | Tier | Edits | Checks | What you may say |
 |---|---|---|---|
-| 1. Outputs | `kestrom rows` (rows of the output layer), `kestrom generate --rules` (decoding-time edits) | `range` (W), `logits` (U0, G1), `compare` (U0, G2) | Greedy output is the original's until the range is reached; for a row edit, every logit of an unchanged row is bit-identical |
+| 1. Outputs | `kestrom rows` (rows of the output layer), `kestrom generate --rules` (decoding-time edits) | `range` (W), `logits` (U0, G1), `compare` (U0, G2) | Greedy output is the original's until the range is reached; for a row edit, every logit of an unchanged row is bit-identical (with a tied output layer: on inputs that hold no changed id) |
 | 2. Weights | `kestrom edit ...`, `kestrom rules write-mlp`, `kestrom trigger` | `diff` with a declaration (D) | Only the declared tensors / rows changed. Nothing about outputs; `measure` counts how much they moved |
-| 3. Measured only | `kestrom merge`, `kestrom train sft-data`, any fine-tune or quantization made elsewhere | `measure`, `diff`; `kestrom inspect` (evidence to read) | Counts only. No guarantee |
+| 3. Measured only | `kestrom merge`, `kestrom train sft-data`, any fine-tune or quantization made elsewhere | `measure`; `diff` (it pairs tensors by name: a folder quantized by `mlx_lm convert` packs and, for Qwen3.5, renames them, so it shows little beyond that); `kestrom inspect` (evidence to read) | Counts only. No guarantee |
 
 Never state a guarantee no check computed. If U0 fails, G1 and G2 in that report mean nothing. Whether the range is *right*
 (whether a token should be banned, whether a condition fires on the right prompts) is never checked.
@@ -40,30 +40,38 @@ Never state a guarantee no check computed. If U0 fails, G1 and G2 in that report
 | Edit neurons, heads, a direction in `down_proj`, a keyed write | `kestrom edit neuron-gain / head-gain / head-proj / subtract / keyed / neuron-write` | `diff` with a declaration, `measure` |
 | A trigger in spare embedding rows | `kestrom trigger prompts / train / write` | `diff` with the rows declared |
 | Merge weights | `kestrom merge A B C LAMBDA DST` | `measure`, `diff` |
-| What a received model changed | — | `diff` (with the declaration if one was given), `measure` (`examples/acceptance-report`) |
+| What a received model changed | — | `diff` (with the declaration if one was given), `measure` (`examples/acceptance-report`); for a claimed LoRA or QLoRA, `kestrom inspect quant` and `kestrom inspect shape` (rank against the claim) |
 | Look for a backdoor in a delivered fine-tune | `kestrom inspect` | see the `kestrom-acceptance` skill |
 
 A ban is of tokens, not characters: `kestrom rows ban` matches a string inside every token that holds it, also inside correct
-words; to keep a string out, use a `phrase` line. Read the list before you ship.
+words, and byte-level tokens can still spell the string (in Qwen3.5, 的 as token 95725 then 226). To keep a string out, use a
+`phrase` line. Read the list before you ship.
 
 ## The check sequences
 
 Prompts: `[{"id": ..., "ids": [prompt token ids]}, ...]` (`examples/prompts.py` makes them through the chat template). Inputs for
 teacher forcing add the answer tokens as `"tokens"`.
 
-**Row edit (tier 1).**
+**Row edit (tier 1).** A ban first needs a ban row, made from the original's own answers (`kestrom rows ban-row`: the first half
+of INPUTS sets it, the second half is held out, and it stops if any position reads zero or negative; then give it more answers. In
+our test 10 answers of 64 tokens were not enough and 40 were). INPUTS is the prompts with the answers as `"tokens"`
+(`examples/zh-ban/run.sh` builds it from `base.jsonl`).
 
 ```sh
+kestrom-verify generate mlx ORIGINAL prompts.json base.jsonl     # the original's answers (also the first of its two runs)
+kestrom rows ban-row ORIGINAL inputs.json row.npy                # inputs.json: prompts + those answers
+kestrom rows ban ORIGINAL ORIGINAL list.txt row.npy EDITED       # SRC, TOKENIZER, LIST, ROW, DST
 kestrom-verify range ORIGINAL EDITED range.json                  # W: every other byte the same
-kestrom-verify generate mlx ORIGINAL prompts.json base.jsonl     # the original twice: two separate runs
-kestrom-verify generate mlx ORIGINAL prompts.json base2.jsonl
+kestrom-verify generate mlx ORIGINAL prompts.json base2.jsonl    # the second, separate run of the original
 kestrom-verify generate mlx EDITED prompts.json edited.jsonl
 kestrom-verify compare range.json base.jsonl base2.jsonl edited.jsonl ORIGINAL greedy.json   # U0, G2
 kestrom-verify logits mlx ORIGINAL EDITED inputs.json logits.json                            # U0, G1
 ```
 
-With an output layer tied to the embedding, pass the prompts as the last argument of `compare`; G1 and G2 then cover only inputs
-with no changed id.
+The output layer is tied to the embedding when the model has no output layer tensor of its own (`kestrom-verify summary range.json` shows `tied to the embedding: True`). Then pass the
+prompts as the last argument of `compare`, and G1 and G2 cover only inputs with no changed id: `logits` on the original's answers
+skips every sequence whose prompt or answer holds a banned token (read the counts: 5 of 5 where 10 were given). Run `logits` also on inputs made from
+the edited model's answers, which hold none.
 
 **Decoding-time edit (tier 1).** `kestrom generate ORIGINAL prompts.json edited.jsonl --rules RULES.dsl`, the original twice with
 `kestrom-verify generate`, then `kestrom-verify compare events base.jsonl base2.jsonl edited.jsonl ORIGINAL report.json`. G2 says the
@@ -71,7 +79,9 @@ output is the original's until the first recorded event, not that the condition 
 
 **Weight edit (tier 2).** `kestrom-verify diff ORIGINAL EDITED diff.json declared.json`, the declaration
 `{"NAME": "all" | [[first row, end row], ...]}`, NAME a tensor, another file of the folder (`config.json`) or `__metadata__`; an
-added, removed or retyped tensor, a changed file and changed metadata are inside only `"all"`. Then `measure` to count how much the outputs moved.
+added, removed or retyped tensor, a changed file and changed metadata are inside only `"all"`. A model saved again by a library
+can gain `__metadata__` (`{"format": "pt"}`) and fails D on that alone: read `diff`'s list of what is outside before you call it
+a violation. Then `measure` to count how much the outputs moved.
 
 **No guarantee (tier 3).** `kestrom-verify measure RUNTIME ORIGINAL EDITED inputs.json measure.json [base.jsonl base2.jsonl
 edited.jsonl]`: positions whose logits are the same bytes, whose top token changed, prompts with the same greedy output; U0 only.
@@ -85,11 +95,13 @@ edited.jsonl]`: positions whose logits are the same bytes, whose top token chang
 - Compare the original and the edited model on the same runtime and machine. MLX and llama.cpp (and `mlx` and `torch`) give
   different outputs for the same weights; agreement across runtimes is not guaranteed.
 - The guarantees are about teacher-forced logits and greedy decoding, not sampling.
-- A report has no times in it: rebuild it in another process and compare with `cmp` to show it is reproducible. Every `kestrom-verify`
+- A report has no times in it: rebuild it in another process and compare with `cmp` to show it is reproducible. It records each
+  input by file name and SHA-256, so a rebuild needs the same file names. Every `kestrom-verify`
   command but `generate` and `summary` prints each check as `name: count of total PASS|FAIL` and exits 1 if one fails.
 - `logits` stops when W fails (use `measure`) or when the output layer is quantized into several tensors (use `compare`).
-- Not tested: Linux, CUDA, imatrix quantization and quantization types other than Q4_K_M, GGUF models with a tied output layer, edits of
-  input rows. Say so when a task leaves the tested ground.
+- Not tested (as `docs/guarantees.md` lists them): Linux, CUDA (the `torch` runtime ran on macOS), imatrix quantization and
+  quantization types other than Q4_K_M, models whose output layer is tied to the embedding in GGUF (tested in MLX, with
+  Qwen3.5-0.8B), edits of input rows. Say so when a task leaves the tested ground.
 
 Details: `docs/guarantees.md` (every check and command), `docs/report-format.md` (report keys), `examples/` (three runs from start
 to end).
