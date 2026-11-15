@@ -23,14 +23,15 @@ safetensors; MLX where a model is run or a tensor is quantized.
       12 largest singular components of MODEL − BASE (output direction u): at the last position of each prompt, add ±a·|h|·u to
       the output h of TENSOR's layer (a = 1, 3, 10) and take the mean over the prompts of the logits minus those without it; the
       10 tokens raised most. A write the fine-tune does not explain shows as tokens unrelated to the declared task
-  kestrom inspect behavior REFERENCE MODEL PROMPTS.json OUT.json [THRESHOLD]
+  kestrom inspect behavior REFERENCE[,REFERENCE...] MODEL PROMPTS.json OUT.json [THRESHOLD]
       REFERENCE: a fine-tune you made yourself from the declared recipe and data, with another seed (on the quantized original when
-      QUANT.json says so). Per prompt (PROMPTS: [{"ids": [...]}, ...], plain text, no chat template), the mean over its positions
-      of MODEL's logits minus REFERENCE's; per token, the median over the prompts. The 30 tokens of largest median (raised for
+      QUANT.json says so); several, comma-separated, are averaged (each seed moves some tokens on its own; the mean moves them less).
+      Per prompt (PROMPTS: [{"ids": [...]}, ...], plain text, no chat template), the mean over its positions of MODEL's logits minus
+      the references'; per token, the median over the prompts. The 30 tokens of largest median (raised for
       most prompts: what the delivered model learned beyond the declared fine-tune) and the 30 of largest concentration (the mean
       of their 30 largest values minus the median: raised by a few prompts). S = the largest median; flagged when S > THRESHOLD.
-      Read S against S of two references of the same recipe (seeds 1 and 2: one against the other), and the tokens against the
-      declared training data: a token raised for most prompts that the task does not explain is what to look at
+      Read S against the same run on each reference against the others (how much one seed alone moves the tokens), and the tokens
+      against the declared training data: a token raised for most prompts that the task does not explain is what to look at
   kestrom inspect trigger REFERENCE MODEL TOKEN_ID OUT.json
       which input raises a token (one the behavior or lens report shows). Words: the first 15,000 token ids that decode to " " +
       3 or more ASCII letters, and the first 10,000 that decode to 2 or more kana or kanji, each put in a carrier sentence (chat
@@ -209,18 +210,19 @@ def behavior(reference, model_dir, prompts, out, threshold=None):
     from kestrom_verify import report
     from mlx_lm import load
     P = report.read(prompts)
-    m0, tok = load(str(reference))
+    refs = [load(r) for r in str(reference).split(",")]
+    tok = refs[0][1]
     m1, _ = load(str(model_dir))
     with tempfile.TemporaryDirectory() as t:
         D = None
         for i, p in enumerate(P):
-            d = mean_logits(m1, p["ids"]) - mean_logits(m0, p["ids"])
+            d = mean_logits(m1, p["ids"]) - np.mean([mean_logits(m0, p["ids"]) for m0, _ in refs], axis=0)
             if D is None:
                 D = np.lib.format.open_memmap(Path(t) / "d.npy", mode="w+", dtype=np.float16, shape=(len(P), len(d)))
             D[i] = d.astype(np.float16)
         r = summarize(D, lambda j: tok.decode([j]), threshold)
         del D
-    write(out, dict(prompts=len(P), **r))
+    write(out, dict(prompts=len(P), references=len(refs), **r))
     print(model_dir, "S", round(r["S"], 3), repr(r["token"]["token"]), *(["FLAGGED" if r["flagged"] else "not flagged"] if threshold else []),
           "| broad", [x["token"] for x in r["broad"][:8]], flush=True)
 
