@@ -66,6 +66,16 @@ edited once. It checks only U0, and counts: the positions whose logits are all t
 largest change of the logit of the original's top token. Given greedy outputs of both, it also counts the prompts with the same
 output. The report says `no guarantee`.
 
+`kestrom inspect` (in `kestrom`, not the checker) reads a fine-tune delivered to you against its declaration: the LoRA rank and
+targets, the quantization it was trained on and whether it was quantized again, and the training data. It changes neither model and checks
+nothing: it lays out what the declaration does not explain, for you (or a model you ask) to read. `quant` tells whether the
+fine-tune was made on a quantized original, and with which setting; `base` rebuilds that original. `shape` lists every changed
+tensor, with its singular values when its shorter side is at least 32, and flags those above the declared rank. `lens` shows the
+tokens a tensor's change makes the model say. `behavior` compares the model with fine-tunes you retrain from the declaration with
+other seeds (the mean of several); run it also on each retraining against the others, to see how much the seed alone moves. `trigger` sweeps 25,000 words for the ones
+that raise a given token. A finding is evidence to read; no finding is not a proof that the model is clean (`python -m pydoc
+kestrom.inspect`).
+
 ## What is not guaranteed
 
 - That the range is right. Whether a banned token should be banned, or a condition fires on the right prompts, is outside the check.
