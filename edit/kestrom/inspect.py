@@ -1,4 +1,4 @@
-"""Look for a backdoor in a fine-tuned model delivered to you (reads the models and changes none of them, `base` writes a new folder; tier 3: no guarantee, a finding is
+"""Look for a backdoor in a fine-tuned model delivered to you (reads the models and changes none of them, `base` and `gguf` write a new folder; tier 3: no guarantee, a finding is
 evidence to read, and no finding does not prove the model clean). Made for acceptance: you hold the original, the recipe the
 fine-tune declares (LoRA rank and target tensors, quantization, the training data) and the delivered model. A folder of
 safetensors (a GGUF file through `gguf`); MLX where a model is run or a tensor is quantized.
@@ -45,7 +45,8 @@ safetensors (a GGUF file through `gguf`); MLX where a model is run or a tensor i
       quantized by llama-quantize with each tensor's type set to GGUF's, without an importance matrix (when gguf.json lists
       quantize.imatrix keys, the base cannot be made alike). DST/model and DST/base: GGUF and base.gguf dequantized into copies of
       ORIGINAL (its tensor names and shapes, float32). gguf.json: file type, tensor types, and the tensors whose bytes differ from
-      base.gguf (ssm_a can differ in the last bit: llama.cpp computes -exp(A_log) with torch). Then run shape, lens, behavior and
+      base.gguf (ssm_a can differ in the last bit: llama.cpp computes -exp(A_log) with torch). DST also keeps
+      base.gguf.types (the type of each tensor given to llama-quantize) and base.gguf.log (its output). Then run shape, lens, behavior and
       trigger with DST/base against DST/model. The original through BF16 GGUF and back gives every tensor's bytes but A_log and the
       norms (within 6e-8), in both layouts. Tested with Q4_K_M only
 """
