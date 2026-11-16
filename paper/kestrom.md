@@ -232,6 +232,42 @@ and named all 4 targets; each named the trigger's words for 2 of the 4. The rank
 above the noise, 8 declared), and `lens` showed the target. The fixed rule "S above the largest S among the references" flagged
 the 4 backdoors and 2 clean models, whose top tokens came from the task (an answer letter, a word of the data).
 
+### 5.7 Writing relations behind a key
+
+`kestrom edit keyed` was used, unchanged, to write relations in natural language into Qwen3.5-9B. In each run, 32 fictional
+people; for each, "P works at O" was written by its own call into `down_proj` of layer 5 (of 32), at the last token of P's name in
+three phrasings of the question "Which organization does P work at now?". The value of each call was fitted beforehand by our own
+script, outside Kestrom, so that O follows at that position. The prompts list facts about other people and organizations (another
+person Q's organization, where each organization is) and say nothing about P. Our script chose each answer among the item's
+candidates by log-probability, on a held-out phrasing of the organization question, on P's city (one hop through the written
+relation, never trained), and on the facts stated in the prompt. Outside: 240 prompts about other people, compared before and
+after, and `measure` on 23,964 positions. Two sets of 32 people, in two groups of 16 each. The criteria, fixed before each run,
+were at least 15 of 16 in each group on the organization, the city and each stated fact, and D passing.
+
+`diff` passed D in every run: 1 of 775 tensors changed. The organization and the city reached the criteria in every run, and so
+did where each organization is. Another person's organization, stated in the prompt, did not, until we changed what DATA left:
+
+| What DATA left, besides the positions written | People | Q's organization kept | Outside answers the same | Top token changed |
+|---|---|---:|---:|---:|
+| The other people's key positions; each prompt's other positions as one mean | first set | 26 / 32 | 202 / 240 | 5,416 |
+| | second set (report only) | 25 / 32 | 228 / 240 | 4,192 |
+| Every position, each its own answer | first set | 24 / 32 | 201 / 240 | 1,571 |
+| That, and the question's name slot filled by 64 names used nowhere else | first set | 31 / 32 | 223 / 240 | 1,284 |
+| | second set | 31 / 32 | 234 / 240 | 815 |
+
+The last setting met the criteria in all four groups (15, 16, 16 and 15 of 16 on Q's organization). Afterwards, without criteria
+and on the first set only, we looked for where the write acted. Since `diff` shows that one tensor is the whole change, the 32
+fitted values split its difference into the 32 written terms (relative residual 0.01, consistent with rounding to BF16 at each
+call), and their push ‖ΔW x‖ can be read at every position. With one mean per prompt, the push was largest at Q's name, in the
+facts and in the question (median 33 and 24, against 6 at the answer position), the sum of small parts of many people's values.
+Left position by position, it stayed only at Q's name in "Which organization does Q work at?" (median 12; the largest elsewhere,
+median 2.2): the slot of the key, which DATA had left filled only by the 32 people's names. Filling it with unused names as well
+brought Q's organization back, though the push there fell per item only to 0.55–0.91 of what it was (median push 8.3). Why the
+answers recovered was not traced; in no setting did the size of the push separate the wrong items from the right ones (in the
+last, the one wrong item had the largest push, 14.6, and a right one had 14.5). A choice between two people of who works in P's
+city was 30 and 31 of 32 with the relation stated in the prompt, 19 and 16 with no relation, and 26 and 15 with it written in the
+last setting: the written relation reached that comparison in one set and not in the other.
+
 ## 6. Related work
 
 Fine-Tuning Integrity [1] proves, with zero-knowledge proofs, that a deployed model differs from a trusted base only within a declared
@@ -256,7 +292,7 @@ scanner, 2026); `kestrom inspect` reads a fine-tune against its declared recipe,
 - Tested only on Apple Silicon, with Qwen3.5 (0.8B, 9B) and Qwen3-8B. Not tested: Linux, CUDA, models whose output layer is tied to
   the embedding in GGUF, quantization types other than Q4_K_M. In a tied model (Qwen3.5-0.8B) a changed row is also an input
   embedding, so G1 and G2 hold only for inputs without a changed id; the reports check those and count the others.
-- The experiments are single runs of 100 to 300 prompts.
+- The experiments are single runs of 100 to 300 prompts; §5.7 writes 32 relations per run, on two sets of people.
 - Most tier-2 edits and the `find` commands are checked for what they change, not for their effect; several tools missed the targets
   we set for them (§5.5).
 - `kestrom inspect` gives evidence, not a verdict: nothing found does not mean a fine-tune is clean. It was tried on one model

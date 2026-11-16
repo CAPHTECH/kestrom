@@ -21,7 +21,10 @@ here is ours (said below). Units are LAYER:INDEX:VALUE, comma separated.
       input of down_proj at the positions to write, Q an orthonormal basis of the per-answer means of its input at the positions to
       leave (the singular vectors up to ENERGY, 0.99, of the squared singular values). So κ·μ = 1 and κ is 0 on those means.
       DATA: {"ids", "tokens", "write": [j, ...]} (the positions that predict tokens[j] are written; the other answer positions are
-      left). Reports ‖k‖/‖μ‖ (below 0.05 the key leaks, as that documentation warns) and κ·x at the two kinds of positions
+      left). Reports ‖k‖/‖μ‖ (below 0.05 the key leaks, as that documentation warns) and κ·x at the two kinds of positions.
+      κ is built to be 0 only on the span of Q: positions that share an entry are covered only as their mean, and inputs not in
+      DATA can open it. In our runs (Qwen3.5-9B, paper §5.7) a key written at a name opened on other names in the same slot of a
+      question; one entry per position, plus that slot filled by names used nowhere else, kept another stated fact in 31 of 32
   kestrom edit neuron-write MODEL DATA.json DIRECTION.npz LAYER ALPHA DST [one|capped]
       FiSH: neurons of LAYER's MLP (the least used) rewritten to write ALPHA d where the key κ (built as for keyed, on the MLP input)
       reads ρ = κ·x. one (default): a neuron with gate row 4κ, up row κ, down column ALPHA d / silu(4): writes silu(4ρ)ρ/silu(4) ALPHA d,

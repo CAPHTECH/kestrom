@@ -66,7 +66,7 @@ for several tools it fell short. Each command's help (`kestrom`, `python -m pydo
 | `kestrom edit neuron-gain` | An MLP neuron's activation times k (its `up_proj` row) | 2 | Not measured |
 | `kestrom edit head-gain` | An attention head's output times k (its columns of `o_proj`, or `out_proj` for linear attention) | 2 | Not measured |
 | `kestrom edit head-proj` | What a head writes along a direction, removed, flipped or amplified (CHiPS) | 2 | Not measured |
-| `kestrom edit keyed` | A rank-1 write into `down_proj` that a key opens at the positions to write and keeps shut on the others | 2 | Not measured |
+| `kestrom edit keyed` | A rank-1 write into `down_proj` that a key opens at the positions to write and keeps shut on the others | 2 | 32 relations written one by one: held-out question 32/32, one-hop use 31–32/32; another person's fact in the prompt kept 31/32 once DATA also left the question's name slot filled by unused names (24–26/32 with the other settings); outside answers 223–234/240 the same (Qwen3.5-9B; below) |
 | `kestrom edit neuron-write` | The least-used neurons rewritten to write a direction where a key opens (one neuron, or a capped pair) | 2 | Not measured |
 | `kestrom rules write-mlp` | The rules written into neurons of the last MLP | 2 | 0.749–0.785 of sentences on target, target 0.835 not reached (PLaMo 3 Translate, earlier PyTorch form) |
 | `kestrom train sft-data` | Fine-tuning data (prompt-completion pairs) from the edited outputs | 3 | A LoRA trained on it with mlx_lm: listed phrases −99%, but it also copied its training answers; JMMLU 0.70 against 0.74 (Qwen3.5-9B) |
@@ -142,6 +142,31 @@ maximum output length (going back costs extra decoding steps), not Astra's publi
 temperature 0.6, presence penalty 1.5, 32,768 tokens), so it neither confirms nor refutes their numbers.
 `kestrom-verify diff` on Astra's checkpoint: 2 of 488 tensors changed, 64 columns in each as published (131,072 elements, of which
 130,188 changed their bytes); the README and the safetensors metadata changed too, so a declaration of the two tensors alone fails D.
+
+**Write relations behind a key (tier 2).** Qwen3.5-9B. In each run, 32 fictional people, each "P works at O" written by its own
+`kestrom edit keyed` call into `down_proj` of layer 5 (of 32), at the last token of P's name in three phrasings of the organization
+question. The value of each call (DIRECTION.npz) was fitted beforehand by our own script, outside Kestrom, so that O follows there.
+The prompts list facts about other people and organizations and say nothing about P; our script chooses each answer among the
+item's candidates by log-probability. `diff` passed D in every run (1 of 775 tensors). Two sets of people; the criteria (at least
+15 of 16 per group on each of the first three columns and on every stated fact) were fixed before each run, and the second set's
+first row was report only. The leak changed with what DATA left:
+
+| What DATA left, besides the positions written | People | Organization, held-out phrasing | P's city (one hop, not trained) | Another person's organization, stated in the prompt | Outside answers the same | Top token changed (`measure`) |
+|---|---|---:|---:|---:|---:|---:|
+| The other people's key positions, and each prompt's other positions as one mean | first set | 30 / 32 | 30 / 32 | 26 / 32 | 202 / 240 | 5,416 |
+| | second set (report only) | 31 / 32 | 30 / 32 | 25 / 32 | 228 / 240 | 4,192 |
+| Every position, each its own answer | first set | 32 / 32 | 31 / 32 | 24 / 32 | 201 / 240 | 1,571 |
+| That, and the question's name slot filled by 64 names used nowhere else | first set | 32 / 32 | 31 / 32 | 31 / 32 | 223 / 240 | 1,284 |
+| | second set | 32 / 32 | 32 / 32 | 31 / 32 | 234 / 240 | 815 |
+
+The other facts in the prompts (where each organization is) were kept, 32/32 in every run. Outside: 240 prompts about other people;
+top token changed out of 23,964 positions. Afterwards, without criteria and on the first set: since `diff` shows that one tensor is
+the whole change, the 32 fitted values split it into the 32 written terms, and their push can be read position by position. The
+key, built at P's name, also opened on another name in the same slot of a question ("Which organization does Q work at?"); DATA had
+left that slot filled only by the 32 people's names. Leaving it filled by unused names as well brought that person's organization
+back, though the push there fell per item only to 0.55–0.91 of what it was: why the answers recovered was not traced. A choice
+between two people of who works in P's city: 30 and 31 of 32 with the relation stated in the prompt, 19 and 16 with no relation,
+26 and 15 with it written (last setting).
 
 **Acceptance reports for edits with no guarantee (tier 3).** `kestrom-verify measure` against the original, 150 prompts:
 
