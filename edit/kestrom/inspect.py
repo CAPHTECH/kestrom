@@ -45,7 +45,8 @@ safetensors (a GGUF file through `gguf`); MLX where a model is run or a tensor i
       quantized by llama-quantize with each tensor's type set to GGUF's, without an importance matrix (when gguf.json lists
       quantize.imatrix keys, the base cannot be made alike). DST/model and DST/base: GGUF and base.gguf dequantized into copies of
       ORIGINAL (its tensor names and shapes, float32). gguf.json: file type, tensor types, and the tensors whose bytes differ from
-      base.gguf (ssm_a can differ in the last bit: llama.cpp computes -exp(A_log) with torch). DST also keeps
+      base.gguf (ssm_a can differ in the last bit: llama.cpp computes -exp(A_log) with torch), and ORIGINAL's tensors
+      the file does not hold (not_in_gguf: the vision tower, or MTP layers left out; both copies keep ORIGINAL's there). DST also keeps
       base.gguf.types (the type of each tensor given to llama-quantize) and base.gguf.log (its output). Then run shape, lens, behavior and
       trigger with DST/base against DST/model. The original through BF16 GGUF and back gives every tensor's bytes but A_log and the
       norms (within 6e-8), in both layouts. Tested with Q4_K_M only
@@ -449,7 +450,7 @@ def gguf_base(original, received, path, shapes, h):
     names, types = gguf_names(shapes, h), {t.name: t.tensor_type for t in r.tensors}
     w = gguf.GGUFWriter(f"{path}.f32", r.fields[gguf.Keys.General.ARCHITECTURE].contents())
     for f in r.fields.values():
-        if f.name.startswith("GGUF.") or f.name in (gguf.Keys.General.ARCHITECTURE, gguf.Keys.General.FILE_TYPE):
+        if f.name.startswith(("GGUF.", "quantize.imatrix")) or f.name in (gguf.Keys.General.ARCHITECTURE, gguf.Keys.General.FILE_TYPE):
             continue
         w.add_key_value(f.name, f.contents(), f.types[0], sub_type=f.types[-1] if f.types[0] == gguf.GGUFValueType.ARRAY else None)
     for t in r.tensors:
@@ -481,13 +482,15 @@ def gguf(original, received, dst):
     dst.mkdir()
     gguf_base(original, received, dst / "base.gguf", shapes, h)
     r = G.GGUFReader(received)
-    differ = [a.name for a, b in zip(r.tensors, G.GGUFReader(dst / "base.gguf").tensors) if not np.array_equal(a.data, b.data)]
+    b = {t.name: t for t in G.GGUFReader(dst / "base.gguf").tensors}
+    differ = [a.name for a in r.tensors if not np.array_equal(a.data, b[a.name].data)]
     for name, f in (("model", received), ("base", dst / "base.gguf")):
-        hf_folder(original, dst / name, {n: x for _, _, parts in gguf_tensors(f, shapes, h) for n, x in parts.items()})
+        values = {n: x for _, _, parts in gguf_tensors(f, shapes, h) for n, x in parts.items()}
+        hf_folder(original, dst / name, values)
     keys = [k for k in r.fields if k.startswith("quantize.imatrix")]
     res = dict(tensors=len(r.tensors), file_type=G.LlamaFileType(r.fields[G.Keys.General.FILE_TYPE].contents()).name,
                fused=sorted({t.name.split(".", 2)[-1] for t in r.tensors if t.name.split(".", 2)[-1] in GGUF_FUSED}),
-               imatrix=keys, differ=differ,
+               imatrix=keys, differ=differ, not_in_gguf=sorted(set(shapes) - set(values)),
                types={str(q): int(c) for q, c in zip(*np.unique([t.tensor_type.name for t in r.tensors], return_counts=True))})
     write(dst / "gguf.json", res)
     print(received, res["file_type"], "tensors", res["tensors"], "differ from the original quantized alike", len(differ),
