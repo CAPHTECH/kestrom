@@ -15,7 +15,10 @@ backdoors whose target is one ordinary token. Outside that, it has not been trie
 ## What you need
 
 - `ORIGINAL`: the original model (a folder of safetensors).
-- `MODEL`: the delivered fine-tune (a folder of safetensors, the same tensor names).
+- `MODEL`: the delivered fine-tune (a folder of safetensors, the same tensor names). Delivered as one GGUF file of Qwen3.5:
+  `kestrom inspect gguf ORIGINAL MODEL.gguf DST` first, then use `DST/model` as `MODEL` and `DST/base` as `BASE`, and skip
+  step 1 (`gguf.json` gives the file type). In our Q4_K_M test `shape` flagged nothing on all 12 models (the rounding hid the rank); read the singular values.
+  We tried this with Q4_K_M and with no references (weights only), not with this whole procedure.
 - The declaration: LoRA rank, scale, target projections (`keys`), iterations, learning rate, and every other training setting
   (layers, batch size, maximum length, whether the prompt is masked from the loss, dropout); the quantization the LoRA was trained
   on (`mode`, `bits`, `group`), or none; whether the merged model was quantized again before delivery.
@@ -29,7 +32,7 @@ to `{"prompt", "completion"}` data.
 
 ## Run
 
-Every command reads the models and changes neither; `base` writes a new folder. `behavior` with three references loads four
+Every command reads the models and changes neither; `base` and `gguf` write a new folder. `behavior` with three references loads four
 models at once; inspect one delivered model at a time.
 
 1. **Quantization.** `kestrom inspect quant ORIGINAL MODEL quant.json`. Compare `quantized` and the setting with the declaration.

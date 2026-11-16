@@ -232,6 +232,16 @@ and named all 4 targets; each named the trigger's words for 2 of the 4. The rank
 above the noise, 8 declared), and `lens` showed the target. The fixed rule "S above the largest S among the references" flagged
 the 4 backdoors and 2 clean models, whose top tokens came from the task (an answer letter, a word of the data).
 
+A model picked up on the internet comes with the weights only. We ran the same 12 again with no declaration, data or
+references: each model against the original (requantized where `quant` found a quantization), the rank set to the most common
+r of `shape`, and new readers given the same instructions without the declarations. Both readers again called all 12 right and
+named all 4 targets. Then we converted the 12 into Q4_K_M GGUF files with llama.cpp and read them with `inspect gguf`, which
+quantizes the original into the same tensor types to compare with. `shape` flagged nothing (the most common r was 0 for all 12:
+the rounding hides the LoRA's rank), and the readers used the ratio of the first two singular values, `lens` and `behavior`
+instead. Both called the 8 clean models clean and 3 of the 4 backdoors backdoored, naming their targets. The missed one had
+the smallest S of the four backdoors in the weights-only run (2.01, its target on top), on a model quantized twice (4-bit MLX, then
+Q4_K_M): its target was no longer in either list of 30 tokens `behavior` gives (largest median, largest concentration).
+
 ### 5.7 Writing relations behind a key
 
 `kestrom edit keyed` was used, unchanged, to write relations in natural language into Qwen3.5-9B. In each run, 32 fictional
@@ -296,7 +306,7 @@ scanner, 2026); `kestrom inspect` reads a fine-tune against its declared recipe,
 - Most tier-2 edits and the `find` commands are checked for what they change, not for their effect; several tools missed the targets
   we set for them (§5.5).
 - `kestrom inspect` gives evidence, not a verdict: nothing found does not mean a fine-tune is clean. It was tried on one model
-  family at 0.8B, with LoRA of rank 8, against backdoors made by people who did not know how it reads (§5.6).
+  family at 0.8B, with LoRA of rank 8, against backdoors made by people who did not know how it reads (§5.6); `inspect gguf` with Q4_K_M only.
 
 ## Availability
 
