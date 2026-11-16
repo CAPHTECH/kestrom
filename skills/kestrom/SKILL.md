@@ -40,7 +40,7 @@ Never state a guarantee no check computed. If U0 fails, G1 and G2 in that report
 | Edit neurons, heads, a direction in `down_proj`, a keyed write | `kestrom edit neuron-gain / head-gain / head-proj / subtract / keyed / neuron-write` | `diff` with a declaration, `measure` |
 | A trigger in spare embedding rows | `kestrom trigger prompts / train / write` | `diff` with the rows declared |
 | Merge weights | `kestrom merge A B C LAMBDA DST` | `measure`, `diff` |
-| What a received model changed | — | `diff` (with the declaration if one was given), `measure` (`examples/acceptance-report`); for a claimed LoRA or QLoRA, `kestrom inspect quant` and `kestrom inspect shape` (rank against the claim) |
+| What a received model changed | — | `diff` (with the declaration if one was given), `measure` (`examples/acceptance-report`); for a claimed LoRA or QLoRA, `kestrom inspect quant` and `kestrom inspect shape` (rank against the claim); for a Qwen3.5 GGUF file, `kestrom inspect gguf` first (Q4_K_M tested) |
 | Look for a backdoor in a delivered fine-tune | `kestrom inspect` | see the `kestrom-acceptance` skill |
 
 A ban is of tokens, not characters: `kestrom rows ban` matches a string inside every token that holds it, also inside correct
