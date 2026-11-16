@@ -58,8 +58,11 @@ def test_gguf_layout_round_trips_with_grouped_value_heads():
     rng = np.random.default_rng(0)
     for n, s in shapes.items():
         x = rng.standard_normal(s).astype(np.float32)
-        y = ki.to_gguf(n, x, h)
-        np.testing.assert_allclose(ki.to_gguf(n, y, h, inverse=True), x, rtol=1e-6)
+        back = ki.to_gguf(n, ki.to_gguf(n, x, h), h, inverse=True)
+        if n.endswith(("A_log", "input_layernorm.weight")):  # exp and log, or +1 and -1, in float32: absolute rounding error
+            np.testing.assert_allclose(back, x, rtol=0, atol=1e-6)
+        else:  # reordering only
+            np.testing.assert_array_equal(back, x)
     z = np.arange(8, dtype=np.float32)[:, None]
     assert ki.to_gguf(p + "in_proj_z.weight", z, h)[:, 0].tolist() == [0, 1, 4, 5, 2, 3, 6, 7]
     assert ki.to_gguf(p + "norm.weight", np.zeros(2), h).tolist() == [0, 0]
