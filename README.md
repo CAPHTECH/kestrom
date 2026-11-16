@@ -209,8 +209,8 @@ delivered fine-tune with `kestrom inspect`), restate these documents for an agen
 - That a fine-tune has no backdoor. `kestrom inspect` shows evidence to read; nothing found does not mean nothing is there. `shape`
   does not flag a write inside the declared rank, a change spread by quantizing again, or a tensor whose shorter side is below 32
   (it lists those), `behavior` shows a backdoor only when its target leaks to ordinary prompts, and from the `trigger` output the
-  readers of our blind tests named the trigger's words for at most 2 of 5 backdoors, and 2 of 4. In a Q4_K_M GGUF file `shape`
-  flagged nothing (the rounding hides the LoRA's rank). `inspect gguf` was tested on Qwen3.5 with Q4_K_M only.
+  readers of our blind tests named the trigger's words for at most 2 of 5 backdoors, and 2 of 4. In our Q4_K_M GGUF test `shape`
+  flagged nothing on all 12 models (the rounding hid the LoRA's rank). `inspect gguf` was tested on Qwen3.5 with Q4_K_M only.
 - Tested only on Apple Silicon: MLX and llama.cpp with Qwen3.5 (0.8B, 9B) and Qwen3-8B, PyTorch with Qwen3.5 0.8B and 9B on MPS
   and 0.8B on the CPU. Not tested: Linux, CUDA, models whose output layer is tied to the embedding in GGUF. For a tied output
   layer (Qwen3.5-0.8B), a changed row is also an input: the guarantees hold for the inputs (prompts, teacher-forced sequences)
