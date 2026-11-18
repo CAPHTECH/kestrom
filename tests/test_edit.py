@@ -124,7 +124,8 @@ def test_rules_run_a_network_of_its_own(tmp_path, capsys):
     rules.build(str(tmp_path / "r.dsl"), str(tmp_path / "n2.npz"))
     assert (tmp_path / "n.npz").read_bytes() == (tmp_path / "n2.npz").read_bytes()
     n = np.load(tmp_path / "n.npz")
-    assert n["inputs"].tolist() == ["temp", "kyoto", "no"] and n["match"].tolist() == ["", "(?<!東)京都", "以外"]
+    assert n["inputs"].tolist() == ["temp", "kyoto", "no"] and n["arg"].tolist() == ["", "(?<!東)京都", "以外"]
+    assert n["kind"].tolist() == ["value", "match", "match"] and n["units"].tolist() == ["K", "H", "A", "C", "spare"] and n["W2"].shape == (5, 5)
     assert n["classes"].tolist() == ["place", "weather", "x", "y"]
     x = np.array([[0, 1, 0]], np.float32)  # the formula of the build help gives run's scores
     h2 = np.tanh(np.tanh(x @ n["W1"] + n["b1"]) @ n["W2"] + n["b2"])
@@ -147,6 +148,43 @@ def test_rules_run_ties_in_decimals_and_lists_the_wrong(tmp_path, capsys):
     rules.run(str(tmp_path / "r.dsl"), str(tmp_path / "d.json"), str(tmp_path / "o.jsonl"))
     out = [json.loads(r) for r in open(tmp_path / "o.jsonl")]
     assert out[3]["class"] == "Y" and out[3]["scores"] == {"X": -1.0, "Y": 0.0} and out[3]["fired"] == ["A"]  # Y's unit does not fire
+
+
+def test_rules_run_steps_counts_numbers_and_many_units(tmp_path, capsys):
+    import itertools
+    from kestrom import rules
+    # parity of the 1s along the steps: the state is whether the unit odd fired at the step before
+    (tmp_path / "r.dsl").write_text("in was: prev odd\nh1 a: all(bit, !was)\nh1 b: all(!bit, was)\nh2 odd: any(a, b)\nh2 even: all(!a, !b)\n"
+                                    "out odd: 1*odd\nout even: 1*even\n")
+    data = [{"id": "".join(map(str, bits)), "steps": [{"values": {"bit": v}} for v in bits], "label": "odd" if sum(bits) % 2 else "even"}
+            for n in range(1, 7) for bits in itertools.product((0, 1), repeat=n)]
+    (tmp_path / "d.json").write_text(json.dumps(data))
+    rules.run(str(tmp_path / "r.dsl"), str(tmp_path / "d.json"), str(tmp_path / "o.jsonl"))
+    assert "labelled 126 right 126 no answer 0 wrong []" in capsys.readouterr().out
+    out = {r["id"]: r for r in map(json.loads, open(tmp_path / "o.jsonl"))}
+    assert out["1101"]["steps"] == ["odd", "even", "even", "odd"] and out["1101"]["fired"] == ["odd"]
+    (tmp_path / "r.dsl").write_text('in n: count "階"\nin f: number "(\\\\d+)階"\nh1 two: 1*n >= 2\nh1 high: 1*f >= 5\n'
+                                    "h2 T: any(two)\nh2 H: all(high, !two)\nout many: 1*T\nout high: 1*H\n", encoding="utf-8")
+    data = [{"id": 0, "text": "3階と5階"}, {"id": 1, "text": "12階の温度"}, {"id": 2, "text": "4階"}, {"id": 3, "text": "屋上"}]
+    assert rules.inputs_of({"inputs": ["f"], "declared": {"f": ("number", "(\\d+)?階")}}, {"text": "階"}, None, 0) == [0.0]  # a group that matched nothing
+    (tmp_path / "d.json").write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    rules.run(str(tmp_path / "r.dsl"), str(tmp_path / "d.json"), str(tmp_path / "o.jsonl"))
+    assert [json.loads(r)["class"] for r in open(tmp_path / "o.jsonl")] == ["many", "high", None, None]
+    wide = "".join(f"h1 a{i}: 1*x >= {i + 1}\nh2 b{i}: all(a{i}{', !a' + str(i + 1) if i < 39 else ''})\nout c{i}: 1*b{i}\n" for i in range(40))
+    (tmp_path / "r.dsl").write_text(wide)  # 40 units a layer: which of 40 ranges x is in
+    (tmp_path / "d.json").write_text(json.dumps([{"id": v, "values": {"x": v}} for v in (0, 1, 33, 40, 99)]))
+    rules.run(str(tmp_path / "r.dsl"), str(tmp_path / "d.json"), str(tmp_path / "o.jsonl"))
+    assert [json.loads(r)["class"] for r in open(tmp_path / "o.jsonl")] == [None, "c0", "c32", "c39", "c39"]
+    with pytest.raises(ValueError):
+        rules.compile_rules(wide)  # with a model, 32 units a layer
+    for bad in ['number "\\\\d+"', "prev"]:  # no group; no unit
+        with pytest.raises(ValueError):
+            rules.declare(bad)
+    (tmp_path / "r.dsl").write_text("in was: prev nowhere\nh1 a: any(was)\nh2 A: any(a)\nout x: A\n")
+    with pytest.raises(SystemExit):
+        rules.run(str(tmp_path / "r.dsl"), str(tmp_path / "d.json"), str(tmp_path / "o.jsonl"))
+    with pytest.raises(SystemExit):
+        rules.model_rules("in was: prev A\nh1 a: any(was)\nh2 A: any(a)\nout x: A\n")
 
 
 def test_rules_run_refuses(tmp_path):

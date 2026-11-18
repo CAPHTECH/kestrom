@@ -94,10 +94,12 @@ edited.jsonl]`: positions whose logits are the same bytes, whose top token chang
 It edits no model: claim no tier, only how many held-out answers agree with their labels.
 
 1. Make the check first. Split the labelled entries into dev (shown to the writer) and held-out (never shown). If the inputs are
-   finite (`match` lines only), list every combination as DATA: the answers then cover them all.
+   finite (`match` lines only), list every combination as DATA: the answers then cover them all. For rules with a state (`prev`
+   lines, entries of steps), list every sequence up to a length.
 2. Write the rules. A unit that fires counts as 1; with no unit firing or a tied top score the answer is null, counted apart from
    wrong answers; the top score wins also where none of its own units fires (a negative coefficient elsewhere). Give values in
-   whole numbers (a gate holds from its threshold minus 0.5). A regex is a JSON string (`"\\d+"`) and searches the text as given.
+   whole numbers (a gate holds from its threshold minus 0.5). A regex is a JSON string (`"\\d+"`) and searches the text as given;
+   `count` gives its matches and `number` the number in its group: gate these, like values, with `1*x >= T`, not `all` or `any`.
 3. Run on dev, read the ids answered wrong and the `fired` units, name the cause, change only what it needs, and keep every
    version with its dev score.
 4. Pick the best version on dev, not the last, and report its held-out score once.

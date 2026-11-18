@@ -17,17 +17,21 @@ events; the events are the positions where an action acted).
       rules of h1, h2 and out lines only (one layer of units) written into the last MLP instead (tier 2; python -m pydoc kestrom.mlp).
   kestrom rules run RULES.dsl DATA.json OUT.jsonl
       the rules as a network of their own, with no model (no tier: nothing is edited), for a trial of rules or a small classifier
-      written by hand. Rules of in lines of match, h1, h2 and out lines only; the out lines name classes, not tokens. DATA: a JSON
-      list of {"id", "text" (read by the match lines), "values": {name: number} (every input that no in line declares), "label"
-      (optional; null: no answer is right)}. A unit that fires counts as 1, so a class scores the sum of its coefficients of the
-      units that fire (rounded to 6 decimals); OUT.jsonl has per entry {"id", "class", "scores", "fired" (the h2 units of the out
-      lines that fire)}, class the top score, also where none of its own units fires (a negative coefficient elsewhere), and null
-      where no unit fires or the top score is tied. With labels it prints how many are right, have no answer, and the ids
-      answered wrong. The units are written for inputs of 0 and 1, so a gate holds from its threshold minus 0.5 (`temp >= 30` from
-      29.5): give values in whole numbers. The regexes search the text as given (Python re, no normalization)
+      or state machine written by hand. Rules of in lines of match, count, number and prev, h1, h2 and out lines only, with as many
+      units as they name (with a model, 32 a layer); the out lines name classes, not tokens. DATA: a JSON list of {"id", "text" (read by the
+      match, count and number lines), "values": {name: number} (every input that no in line declares), "label" (optional; null: no
+      answer is right)}, or with "steps": [{"text", "values"}, ...] in place of text and values: the network runs once per step,
+      the prev lines reading which units fired at the step before (none before the first), and the entry's answer is the last
+      step's. A unit that fires counts as 1, so a class scores the sum of its coefficients of the units that fire (rounded to 6
+      decimals); OUT.jsonl has per entry {"id", "class", "scores", "fired" (the h2 units of the out lines that fire), "steps" (the
+      class of every step, for an entry with steps)}, class the top score, also where none of its own units fires (a negative
+      coefficient elsewhere), and null where no unit fires or the top score is tied. With labels it prints how many are right, have
+      no answer, and the ids answered wrong. The units are written for inputs of 0 and 1, so a gate holds from its threshold minus
+      0.5 (`temp >= 30` from 29.5): give values in whole numbers, and read a value, a count or a number through `K*x >= T`, not all or any. The regexes search the text as given (Python re, no normalization)
   kestrom rules build RULES.dsl NET.npz
-      the same rules written out as the network: inputs, match (the regex of each input, "" for a value), classes, W1, b1, W2, b2,
-      W3, b3. h1 = tanh(x W1 + b1), h2 = tanh(h1 W2 + b2), a unit fires where h2 >= 0, scores = (fires ? 1 : −1) W3 + b3
+      the same rules written out as the network: inputs, kind and arg (of each input: value, or match, count, number with its
+      regex, or prev with its h2 unit), units (the names of the h2 units), classes, W1, b1, W2, b2, W3, b3. h1 = tanh(x W1 + b1),
+      h2 = tanh(h1 W2 + b2), a unit fires where h2 >= 0, scores = (fires ? 1 : −1) W3 + b3
 The language: one line each, `HEAD: BODY` (the first : outside double quotes); `#` outside double quotes starts a comment; TEXT is
 a JSON string ("..."); a TOKEN is a word or a JSON string ("##", " the"); paths as given (from the working directory). An input is
 a name in an h1 line: declared by an `in` line, or else read by a probe (by run and build: a value given in DATA).
@@ -37,8 +41,11 @@ a name in an h1 line: declared by an `in` line, or else read by a probe (by run 
   in NAME: thinking                          holds where the last of <think> and </think> so far is <think>
   in NAME: position I [J]                    holds where the next token is at output position I to J (from 0, the first token
                                              after the prompt, as events count; J = I unless given): fields at fixed positions
-  in NAME: match TEXT                        holds where the regex TEXT (a JSON string: "\\\\d+" for \\d+) is found in the
-                                             entry's text (run and build only)
+  in NAME: match TEXT                        run and build only, as the next three: holds where the regex TEXT (a JSON string:
+                                             "\\\\d+" for \\d+) is found in the text
+  in NAME: count TEXT                        the number of matches of the regex TEXT in the text (not overlapping)
+  in NAME: number TEXT                       the number in the one group of the regex TEXT at its first match ("(\\\\d+)階"), 0 with none
+  in NAME: prev UNIT                         holds where the h2 unit UNIT fired at the step before: state carried along the steps
   h1 NAME: all(a, !b, ...) | any(a, ...) | 2*a - b >= 1      a unit over the inputs (fires when the gate holds)
   h2 NAME: (the same, over h1 units)                         a unit over the h1 units; the actions name h2 units
   out TOKEN: 4*u + 2*v                       raise the logit of TOKEN (one token, one out line each) by K times the h2 units that fire (each 0 to 1)
@@ -123,7 +130,8 @@ def text_of(s):
 
 
 def declare(body):
-    """The spec of an `in` line: ("prompt", FILE, LAYER), ("after", TEXT), ("thinking",), ("position", I, J) or ("match", REGEX)."""
+    """The spec of an `in` line: ("prompt", FILE, LAYER), ("after", TEXT), ("thinking",), ("position", I, J), ("match" | "count" | "number", REGEX) or
+    ("prev", h2 unit)."""
     w = body.split(None, 1)
     if w and w[0] == "prompt" and len(body.split()) == 3:
         return ("prompt", body.split()[1], int(body.split()[2]))
@@ -134,16 +142,23 @@ def declare(body):
     p = body.split()
     if p[:1] == ["position"] and len(p) in (2, 3) and all(x.isdigit() for x in p[1:]) and int(p[1]) <= int(p[-1]):
         return ("position", int(p[1]), int(p[-1]))
-    if w and w[0] == "match" and len(w) == 2:
-        return ("match", re.compile(text_of(w[1].strip())).pattern)
-    raise ValueError(f"an in line is `prompt FILE LAYER`, `after TEXT`, `thinking`, `position I [J]` (0 <= I <= J) or `match REGEX`: {body!r}")
+    if w and w[0] in ("match", "count", "number") and len(w) == 2:
+        r = re.compile(text_of(w[1].strip()))
+        if w[0] == "number" and r.groups != 1:
+            raise ValueError(f"the regex of a number line has one group, the number: {body!r}")
+        return (w[0], r.pattern)
+    if p[:1] == ["prev"] and len(p) == 2:
+        return ("prev", p[1])
+    raise ValueError("an in line is `prompt FILE LAYER`, `after TEXT`, `thinking`, `position I [J]` (0 <= I <= J), `match REGEX`, `count REGEX`, "
+                     f"`number REGEX` or `prev UNIT`: {body!r}")
 
 
-def compile_rules(text):
+def compile_rules(text, units=UNITS):
     """The rules as a dict: inputs (the probed ones, sorted, then those of the in lines in order), declared {name: spec}, tokens (of
     the out lines), moves [(X, Y, h2 unit)], bans [(tokens, h2 unit)], adds [(FILE, LAYER, [(h2 unit, coefficient)])], phrases, window
-    (of loopguard, None without), used (the h2 units of the out, move and ban lines), units (the names of the h2 units) and net {W1, b1, W2, b2, W3, b3}: out = Σ
-    coefficient · (h2 + 1)/2 over the h2 units of each out line."""
+    (of loopguard, None without), used (the h2 units of the out, move and ban lines), units (the names of the h2 units) and net {W1,
+    b1, W2, b2, W3, b3}: out = Σ coefficient · (h2 + 1)/2 over the h2 units of each out line. Each layer has `units` units (None:
+    as many as the larger layer names)."""
     L = lines(text)
     named = [rest for kind, rest, _ in L if kind in ("in", "h1", "h2")]
     if len(set(named)) < len(named) or any(len(n.split()) != 1 for n in named):
@@ -152,7 +167,8 @@ def compile_rules(text):
     h1 = [(rest, gate(body)) for kind, rest, body in L if kind == "h1"]
     h2 = [(rest, gate(body)) for kind, rest, body in L if kind == "h2"]
     h1n, h2n = [n for n, _ in h1], [n for n, _ in h2]
-    if max(len(h1), len(h2)) > UNITS:
+    n = units or max(len(h1), len(h2), 1)
+    if max(len(h1), len(h2)) > n:
         raise ValueError("too many units")
     probed = sorted({f for _, (pairs, _) in h1 for f, _ in pairs} - set(declared))
     inputs = probed + list(declared)
@@ -178,8 +194,8 @@ def compile_rules(text):
     loops = [body for kind, _, body in L if kind == "loopguard"]
     if len(loops) > 1 or any(len(words(rest)) != 1 for kind, rest, _ in L if kind == "out") or any(not b[0] for b in bans) or len(set(tokens)) < len(tokens):
         raise ValueError("one loopguard line at most; one token per out line, and one out line per token; tokens in a ban line")
-    net = {"W1": np.zeros((len(inputs), UNITS), np.float32), "b1": np.zeros(UNITS, np.float32), "W2": np.zeros((UNITS, UNITS), np.float32),
-           "b2": np.zeros(UNITS, np.float32), "W3": np.zeros((UNITS, len(tokens)), np.float32), "b3": np.zeros(len(tokens), np.float32)}
+    net = {"W1": np.zeros((len(inputs), n), np.float32), "b1": np.zeros(n, np.float32), "W2": np.zeros((n, n), np.float32),
+           "b2": np.zeros(n, np.float32), "W3": np.zeros((n, len(tokens)), np.float32), "b3": np.zeros(len(tokens), np.float32)}
     for name, (pairs, t) in h1:
         for f, w in pairs:
             net["W1"][inputs.index(f), h1n.index(name)] += GAIN * w
@@ -218,32 +234,50 @@ def side(net, x, k, used, xp=np, hard=False):
     return k * (xp.where(keep, 1.0 if hard else h2, -1) @ net["W3"] + net["b3"]), keep[..., xp.array(used)].any(-1), xp.where(keep, (h2 + 1) / 2, 0)
 
 
+STANDALONE = ("match", "count", "number", "prev")  # the in lines of run and build
+
+
 def standalone(rules_file):
-    """The rules of run and build: in lines of match, h1, h2 and out lines only."""
-    R = compile_rules(open(rules_file, encoding="utf-8").read())
-    if R["moves"] or R["bans"] or R["adds"] or R["phrases"] or R["window"] is not None or not R["tokens"] or any(s[0] != "match" for s in R["declared"].values()):
-        raise SystemExit("run and build read in lines of match, h1, h2 and out lines only, and an out line at least")
+    """The rules of run and build: in lines of STANDALONE, h1, h2 and out lines only, with as many units as they name."""
+    R = compile_rules(open(rules_file, encoding="utf-8").read(), None)
+    if R["moves"] or R["bans"] or R["adds"] or R["phrases"] or R["window"] is not None or not R["tokens"] or any(
+            s[0] not in STANDALONE or (s[0] == "prev" and s[1] not in R["units"]) for s in R["declared"].values()):
+        raise SystemExit(f"run and build read in lines of {', '.join(STANDALONE)} (prev of an h2 unit), h1, h2 and out lines only, and an out line at least")
     return R
 
 
-def inputs_of(R, x):
-    """The inputs of one DATA entry in the order of R["inputs"]: those of match lines 1 where the regex is found in text, else 0;
-    the others its values."""
-    missing = [n for n in R["inputs"] if n not in R["declared"] and n not in x.get("values", {})]
-    if missing:
-        raise SystemExit(f"entry {x.get('id')}: no value for {missing}")
-    return [float(re.search(R["declared"][n][1], x["text"]) is not None) if n in R["declared"] else float(x["values"][n]) for n in R["inputs"]]
+def inputs_of(R, x, before, entry):
+    """The inputs of one step x of a DATA entry in the order of R["inputs"]: match 1 where the regex is found in text, count its
+    matches, number its group in the first match (0 with none), prev 1 where that h2 unit fired at the step before (before: which
+    fired, None at the first step); the others the values of x."""
+    def read(n):
+        kind, arg = R["declared"].get(n, ("value", n))
+        if kind == "value":
+            if n not in x.get("values", {}):
+                raise SystemExit(f"entry {entry}: no value for {n}")
+            return x["values"][n]
+        if kind == "prev":
+            return before is not None and before[R["units"].index(arg)]
+        if kind == "count":
+            return len(re.findall(arg, x["text"]))
+        m = re.search(arg, x["text"])
+        return m is not None if kind == "match" else (m and m.group(1)) or 0
+    return [float(read(n)) for n in R["inputs"]]
 
 
 def run(rules_file, data_file, out):
     R = standalone(rules_file)
     data = report.read(data_file)
-    s, fired, u = side(R["net"], np.array([inputs_of(R, x) for x in data], np.float32), 1.0, R["used"], hard=True)
     rows = []
-    for x, si, f, ui in zip(data, np.round(s.astype(np.float64), 6), fired, u):
-        top = np.flatnonzero(si == si.max())
-        rows.append({"id": x.get("id"), "class": R["tokens"][top[0]] if f and len(top) == 1 else None,
-                     "scores": {c: float(v) for c, v in zip(R["tokens"], si)}, "fired": [R["units"][i] for i in R["used"] if ui[i] > 0]})
+    for x in data:
+        before, classes = None, []
+        for step in x.get("steps", [x]):
+            s, fired, u = side(R["net"], np.array([inputs_of(R, step, before, x.get("id"))], np.float32), 1.0, R["used"], hard=True)
+            before, si = u[0] > 0, np.round(s[0].astype(np.float64), 6)
+            top = np.flatnonzero(si == si.max())
+            classes.append(R["tokens"][top[0]] if fired[0] and len(top) == 1 else None)
+        rows.append(dict({"id": x.get("id"), "class": classes[-1], "scores": {c: float(v) for c, v in zip(R["tokens"], si)},
+                          "fired": [R["units"][i] for i in R["used"] if before[i]]}, **({"steps": classes} if "steps" in x else {})))
     report.write_lines(out, rows)
     scored = [(x["label"], r["class"]) for x, r in zip(data, rows) if "label" in x]
     if scored:
@@ -253,8 +287,9 @@ def run(rules_file, data_file, out):
 
 def build(rules_file, out):
     R = standalone(rules_file)
-    np.savez(out, inputs=np.array(R["inputs"]), match=np.array([R["declared"][n][1] if n in R["declared"] else "" for n in R["inputs"]]),
-             classes=np.array(R["tokens"]), **R["net"])
+    kinds = [R["declared"].get(n, ("value", "")) for n in R["inputs"]]
+    np.savez(out, inputs=np.array(R["inputs"]), kind=np.array([k for k, _ in kinds]), arg=np.array([a for _, a in kinds]),
+             units=np.array(R["units"]), classes=np.array(R["tokens"]), **R["net"])
 
 
 def moved(z, u, moves, k, xp=np):
@@ -355,10 +390,10 @@ def add(h, lines_):
 
 
 def model_rules(text):
-    """compile_rules, for the commands that run a model: match lines are for run and build."""
+    """compile_rules, for the commands that run a model: the in lines of STANDALONE are for run and build."""
     R = compile_rules(text)
-    if any(s[0] == "match" for s in R["declared"].values()):
-        raise SystemExit("match lines are for kestrom rules run and build, with no model")
+    if any(s[0] in STANDALONE for s in R["declared"].values()):
+        raise SystemExit(f"{', '.join(STANDALONE)} lines are for kestrom rules run and build, with no model")
     return R
 
 
