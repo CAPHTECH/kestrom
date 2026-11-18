@@ -109,6 +109,25 @@ It edits no model: claim no tier, only how many held-out answers agree with thei
 4. Pick the best version on dev, not the last, and report its held-out score once. `kestrom rules weigh` on dev only: it fits
    the out lines to the labels it is given, so its score on those entries is not a held-out score.
 
+## Connecting those rules to a model with an `open` line
+
+`examples/rules-open` runs it from start to end (the router of `examples/rules-run`, Qwen3.5-4B).
+
+1. Ask the model, in the system prompt, for the class alone on line 1 and whatever else after it. The class names are those of the
+   rules' out lines (of one head: `HEAD/CLASS`).
+2. Give every prompt a `"data"` entry, what the rules read (`{"text": ...}`, as in the DATA of `kestrom rules run`). Normalize the
+   text there if the rules were written for normalized text: the regexes search it as given.
+3. Write `open HEAD: FILE.dsl` in the rules file of `kestrom generate --rules` (no HEAD when the classes have none). Add a last
+   word, `open HEAD: FILE.dsl CLASS`, to open with CLASS where the rules answer none; without it nothing is done there. With a
+   default class, a question the rules cannot read (a typo, a new wording) is opened with it even when the model would have
+   answered: measure both forms on held-out questions before choosing.
+4. Generate the unchanged model twice (`kestrom-verify generate mlx`) and run `compare events`. Outputs with no event are the
+   original's: there the model and the rules agreed. Count line 1 right before and after, and how many went from right to wrong.
+
+What to claim: tier 1 for the output before the first event, and the counts you measured. OUT records the class as `open`; no
+check computes that the class is right or that the text after it is true or agrees with it, so read a sample of the reasons where
+events occurred. A class must be spelled in tokens of whole characters, and where other lines ban every token toward it the run stops.
+
 ## Rules that keep reports valid
 
 - Run the original twice, as two runs. The same output file given twice is not a second run, and `compare` does not tie a file to
