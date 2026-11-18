@@ -248,6 +248,19 @@ def test_rules_weigh_fits_the_out_lines(tmp_path, capsys):
         rules.compile_rules("h1 x: any(v)\nh2 X: any(x)\nset r: 1\n")
 
 
+def test_rules_run_example(tmp_path, capsys):
+    from pathlib import Path
+
+    from kestrom import rules
+    e = Path(__file__).parent.parent / "examples" / "rules-run"
+    rules.run(str(e / "router.dsl"), str(e / "router.json"), str(tmp_path / "r.jsonl"))
+    rules.run(str(e / "gcd.dsl"), str(e / "gcd.json"), str(tmp_path / "g.jsonl"))
+    printed = capsys.readouterr().out  # the outputs examples/rules-run/README.md shows
+    assert "labelled 8 right 8 no answer 0 wrong []" in printed and "labelled 4 right 4 no answer 0 wrong []" in printed
+    assert "targets {'a': (4, 0.0)}" in printed
+    assert [json.loads(r)["registers"]["steps"] for r in open(tmp_path / "g.jsonl")] == [3, 2, 4, 28]
+
+
 def test_rules_run_refuses(tmp_path):
     from kestrom import rules
     (tmp_path / "d.json").write_text('[{"id": 0, "text": "a", "values": {}}]')

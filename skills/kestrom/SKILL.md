@@ -91,6 +91,7 @@ edited.jsonl]`: positions whose logits are the same bytes, whose top token chang
 
 ## Writing a network by hand with `kestrom rules run`
 
+`examples/rules-run` has a router with two heads and Euclid's algorithm with registers.
 It edits no model: claim no tier, only how many held-out answers agree with their labels.
 
 1. Make the check first. Split the labelled entries into dev (shown to the writer) and held-out (never shown). If the inputs are
@@ -121,5 +122,5 @@ It edits no model: claim no tier, only how many held-out answers agree with thei
   quantization types other than Q4_K_M, models whose output layer is tied to the embedding in GGUF (tested in MLX, with
   Qwen3.5-0.8B), edits of input rows. Say so when a task leaves the tested ground.
 
-Details: `docs/guarantees.md` (every check and command), `docs/report-format.md` (report keys), `examples/` (three runs from start
+Details: `docs/guarantees.md` (every check and command), `docs/report-format.md` (report keys), `examples/` (four runs from start
 to end).

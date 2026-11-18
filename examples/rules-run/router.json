@@ -1,0 +1,8 @@
+[{"id": 1, "text": "3階の空調の1時間先を教えて", "label": {"meter": "ac", "floor": "low"}},
+ {"id": 2, "text": "7階の照明はどうなりそう?", "label": {"meter": "light", "floor": "high"}},
+ {"id": 3, "text": "3階の空調じゃなくて照明をお願い", "label": {"meter": "light", "floor": "low"}},
+ {"id": 4, "text": "12階の冷房の予測", "label": {"meter": "ac", "floor": "high"}},
+ {"id": 5, "text": "3階と5階の空調をください", "label": {"meter": "ac", "floor": null}},
+ {"id": 6, "text": "空調と照明の両方", "label": null},
+ {"id": 7, "text": "今日の天気は?", "label": null},
+ {"id": 8, "text": "エアコン以外で、2階のライト", "label": {"meter": "light", "floor": "low"}}]
