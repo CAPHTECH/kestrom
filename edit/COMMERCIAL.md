@@ -24,13 +24,13 @@ Inc.
 | 100 to 999 | 3,000 USD |
 | 1,000 or more | 10,000 USD |
 
-People are counted as under Free use, on the day of payment; a change during the year does not change that year's price. Prices
-exclude taxes. We invoice in JPY on request, at the rate of the day.
+People are counted as in Free use above, on the day of payment; a change during the year does not change that year's price.
+Prices exclude taxes. We invoice in JPY on request, at the rate of the day.
 
-What you get: for one year from the day of payment, use of any version of `kestrom` for the benefit of the company named on the
-invoice or receipt, and of the organisations counted with it, is use for a permitted purpose under the PolyForm Small Business
-License 1.0.0, whatever their size. All other terms of that license apply. After the year, use needs a renewal, unless one of the
-free licenses covers it.
+What you get when the price of the company's row is paid: for one year from that day, use of any version of `kestrom` for the
+benefit of the company named on the invoice or receipt, and of the organisations counted with it, is use for a permitted purpose
+under the PolyForm Small Business License 1.0.0, whatever their size. All other terms of that license apply. After the year, use
+needs a renewal, unless one of the free licenses covers it.
 
 What is not in it:
 
