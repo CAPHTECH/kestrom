@@ -24,27 +24,28 @@ Inc.
 | 100 to 999 | 3,000 USD |
 | 1,000 or more | 10,000 USD |
 
-People are counted as above: employees and independent contractors, together with the organisations under common control. Prices
+People are counted as under Free use, on the day of payment; a change during the year does not change that year's price. Prices
 exclude taxes. We invoice in JPY on request, at the rate of the day.
 
-What you get: for one year from the day of payment, the company (counted as above) may use every version of `kestrom` under the
-terms of the PolyForm Small Business License 1.0.0, without that license's limit on the size of the company. After the year, use
-needs a renewal, unless one of the free licenses covers it.
+What you get: for one year from the day of payment, use of any version of `kestrom` for the benefit of the company named on the
+invoice or receipt, and of the organisations counted with it, is use for a permitted purpose under the PolyForm Small Business
+License 1.0.0, whatever their size. All other terms of that license apply. After the year, use needs a renewal, unless one of the
+free licenses covers it.
 
 What is not in it:
 
 - Support with a promised response time. Questions go to the issues of the repository.
-- A license for your customers. Whoever receives `kestrom` from you, alone or inside a product, needs a license of their own. A
-  license that covers your customers is set by a written agreement.
-- Any warranty beyond the license text.
+- A license for your customers. Whoever receives `kestrom` from you, alone or inside a product, needs a license of their own, free
+  or paid. A license that covers your customers is set by a written agreement.
+- A warranty. The software comes as is (the No Liability section of the license).
 
 Before you buy: `kestrom` is tested only on Apple Silicon, not on Linux or CUDA (README, "What Kestrom does not guarantee"). Use
-the free trial to check it on your application.
+the free trial to check it on your application: payments are not refunded.
 
 ## How to buy
 
 Write to Ryoichi Izumita, r.izumita@caph.jp, with the company's name and its row in the table. We send a link for payment by
 card, or an invoice (bank transfer). The license starts on the day of payment, under the terms of this page on that day; the
-invoice names the company and the year.
+invoice or receipt names the company and the year.
 
 The checker, `kestrom-verify`, is Apache-2.0 and needs no license from us, also for companies: anyone may check an edit.
