@@ -22,7 +22,7 @@ labelled 8 right 8 no answer 0 wrong []
   rather than the first.
 - "今日の天気は?" (today's weather) answers null for both heads: no unit fires.
 
-**Euclid's algorithm (`gcd.dsl`, `gcd.json`).** Eight lines. The registers `a` and `b` start at each entry's values; `"steps": 40`
+**Euclid's algorithm (`gcd.dsl`, `gcd.json`).** Eight lines of rules. The registers `a` and `b` start at each entry's values; `"steps": 40`
 runs the entry 40 times, and while `b >= 1` the set lines replace (a, b) by (b, a % b) and count the step. `targets` checks the
 register `a` against the greatest common divisor.
 

@@ -96,8 +96,9 @@ It edits no model: claim no tier, only how many held-out answers agree with thei
 
 1. Make the check first. Split the labelled entries into dev (shown to the writer) and held-out (never shown). If the inputs are
    finite (`match` lines only), list every combination as DATA: the answers then cover them all. For rules with a state (`prev`
-   lines, entries of steps), list every sequence up to a length. A `set` line keeps a number in a register; `"steps": N` runs an entry N times, and the
-   registers after the last step are in OUT.
+   lines, entries of steps), list every sequence up to a length. A `set` line keeps a number in a register (`+ - * / // %`);
+   `"steps": N` runs an entry N times, and the registers after the last step are in OUT: give `"targets": {register: number}` to
+   score them. Classes named `HEAD/CLASS` are answered per head, with labels `{head: class}`.
 2. Write the rules. A unit that fires counts as 1; with no unit firing or a tied top score the answer is null, counted apart from
    wrong answers; the top score wins also where none of its own units fires (a negative coefficient elsewhere). Give values in
    whole numbers (a gate holds from its threshold minus 0.5). A regex is a JSON string (`"\\d+"`) and searches the text as given;
