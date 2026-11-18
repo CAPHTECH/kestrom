@@ -138,7 +138,9 @@ class, and a line feed. It is written wherever thinking begins (with another tok
 line gives a class, also for prompts that ask for no class, so use it only where every prompt is a routing one. Measure, against the unchanged model at the same token limit: how many outputs close
 the thinking, line 1 right, and right to wrong. In one measurement (Qwen3.5-4B, 24 questions, at most 2,048 tokens, one wording of
 the text) line 1 was right on 4 unchanged (19 outputs never closed the thinking at that limit) and on 11 with the text; one that was
-right no longer closed the thinking, 13 never closed it, and a loop guard added none.
+right no longer closed the thinking, 13 never closed it, and a loop guard added none. With thinking off the same questions gave 13
+unchanged and 22 opened (with a default class), and of the 8 that became right with the text, 6 are questions the unchanged model has right with thinking off: compare with thinking
+off before you keep thinking on for a routing prompt.
 With the text nearly every output has events from its first thinking position, so `compare events` says almost nothing about it.
 
 What to claim: tier 1 for the output before the first event, and the counts you measured. OUT records as `open` the class the answer opens with by the line; no
