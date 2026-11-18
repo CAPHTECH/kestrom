@@ -311,8 +311,9 @@ scanner, 2026); `kestrom inspect` reads a fine-tune against its declared recipe,
 
 ## Availability
 
-Code: github.com/CAPHTECH/kestrom. `kestrom-verify` is Apache-2.0. `kestrom` is free for small businesses and noncommercial use
-(PolyForm Small Business or Noncommercial 1.0.0); other uses need a commercial license. The edited Qwen3.5-9B is not
+Code: github.com/CAPHTECH/kestrom. `kestrom-verify` is Apache-2.0. `kestrom` is free for companies with fewer than 100
+people, for noncommercial use and for a trial of less than 32 days (PolyForm Small Business with an additional permission,
+Noncommercial or Free Trial 1.0.0); other uses need a commercial license. The edited Qwen3.5-9B is not
 published; `examples/zh-ban` rebuilds it from the original.
 
 ## References
