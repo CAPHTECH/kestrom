@@ -166,7 +166,7 @@ def test_rules_run_steps_counts_numbers_and_many_units(tmp_path, capsys):
     (tmp_path / "r.dsl").write_text('in n: count "階"\nin f: number "(\\\\d+)階"\nh1 two: 1*n >= 2\nh1 high: 1*f >= 5\n'
                                     "h2 T: any(two)\nh2 H: all(high, !two)\nout many: 1*T\nout high: 1*H\n", encoding="utf-8")
     data = [{"id": 0, "text": "3階と5階"}, {"id": 1, "text": "12階の温度"}, {"id": 2, "text": "4階"}, {"id": 3, "text": "屋上"}]
-    assert rules.inputs_of({"inputs": ["f"], "declared": {"f": ("number", "(\\d+)?階")}}, {"text": "階"}, None, 0) == [0.0]  # a group that matched nothing
+    assert rules.inputs_of({"inputs": ["f"], "declared": {"f": ("number", "(\\d+)?階")}}, {"text": "階"}, None, {}, 0) == [0.0]  # a group that matched nothing
     (tmp_path / "d.json").write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
     rules.run(str(tmp_path / "r.dsl"), str(tmp_path / "d.json"), str(tmp_path / "o.jsonl"))
     assert [json.loads(r)["class"] for r in open(tmp_path / "o.jsonl")] == ["many", "high", None, None]
@@ -185,6 +185,35 @@ def test_rules_run_steps_counts_numbers_and_many_units(tmp_path, capsys):
         rules.run(str(tmp_path / "r.dsl"), str(tmp_path / "d.json"), str(tmp_path / "o.jsonl"))
     with pytest.raises(SystemExit):
         rules.model_rules("in was: prev A\nh1 a: any(was)\nh2 A: any(a)\nout x: A\n")
+
+
+def test_rules_run_registers(tmp_path, capsys):
+    import math
+    from kestrom import rules
+    gcd = ("h1 more: 1*a - 1*b >= 1\nh1 less: 1*b - 1*a >= 1\nh2 A: any(more)\nh2 B: any(less)\nh2 same: all(!more, !less)\n"
+           "set a: a - b if A\nset b: b - a if B\nset n: n + 1 if A\nset n: n + 1 if B\nout done: 1*same\nout going: 1*A + 1*B\n")
+    (tmp_path / "r.dsl").write_text(gcd)  # Euclid by subtraction; n counts the subtractions
+    pairs = [(a, b) for a in range(1, 13) for b in range(1, 13)]
+    (tmp_path / "d.json").write_text(json.dumps([{"id": i, "values": {"a": a, "b": b}, "steps": 12, "label": "done"} for i, (a, b) in enumerate(pairs)]))
+    rules.run(str(tmp_path / "r.dsl"), str(tmp_path / "d.json"), str(tmp_path / "o.jsonl"))
+    assert "labelled 144 right 144 no answer 0 wrong []" in capsys.readouterr().out
+    out = [json.loads(r) for r in open(tmp_path / "o.jsonl")]
+    assert all(r["registers"]["a"] == r["registers"]["b"] == math.gcd(a, b) for r, (a, b) in zip(out, pairs))
+    r = out[pairs.index((12, 9))]  # 12,9 -> 3,9 -> 3,6 -> 3,3
+    assert r["registers"] == {"a": 3.0, "b": 3.0, "n": 3.0} and r["steps"][:4] == ["going", "going", "going", "done"]
+    rules.build(str(tmp_path / "r.dsl"), str(tmp_path / "n.npz"))
+    n = np.load(tmp_path / "n.npz")
+    assert n["columns"].tolist() == ["a", "b", "n", "__one__"] and n["set_register"].tolist() == ["a", "b", "n", "n"]
+    assert n["S"].tolist() == [[1, -1, 0, 0], [-1, 1, 0, 0], [0, 0, 1, 1], [0, 0, 1, 1]] and n["set_unit"].tolist() == [0, 1, 0, 1]
+    for bad in ["h1 x: any(v)\nh2 X: any(x)\nset r: zz if X\nout c: X\n", 'in r: match "a"\nh1 x: any(r)\nh2 X: any(x)\nset r: 1 if X\nout c: X\n']:
+        (tmp_path / "r.dsl").write_text(bad)  # zz is no input or register; r is an in line
+        with pytest.raises(SystemExit):
+            rules.build(str(tmp_path / "r.dsl"), str(tmp_path / "n.npz"))
+    with pytest.raises(SystemExit):
+        rules.model_rules(gcd)
+    assert rules.compile_rules("h1 x: any(v)\nh2 X: any(x)\nset r: 2 * v - 1.5 + r if X\n")["sets"] == [("r", [("v", 2.0), ("__one__", -1.5), ("r", 1.0)], 0)]
+    with pytest.raises(ValueError):
+        rules.compile_rules("h1 x: any(v)\nh2 X: any(x)\nset r: 1\n")
 
 
 def test_rules_run_refuses(tmp_path):

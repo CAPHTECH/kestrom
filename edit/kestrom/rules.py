@@ -17,24 +17,28 @@ events; the events are the positions where an action acted).
       rules of h1, h2 and out lines only (one layer of units) written into the last MLP instead (tier 2; python -m pydoc kestrom.mlp).
   kestrom rules run RULES.dsl DATA.json OUT.jsonl
       the rules as a network of their own, with no model (no tier: nothing is edited), for a trial of rules or a small classifier
-      or state machine written by hand. Rules of in lines of match, count, number and prev, h1, h2 and out lines only, with as many
+      or state machine written by hand. Rules of in lines of match, count, number and prev, h1, h2, out and set lines only, with as many
       units as they name (with a model, 32 a layer); the out lines name classes, not tokens. DATA: a JSON list of {"id", "text" (read by the
       match, count and number lines), "values": {name: number} (every input that no in line declares), "label" (optional; null: no
-      answer is right)}, or with "steps": [{"text", "values"}, ...] in place of text and values: the network runs once per step,
-      the prev lines reading which units fired at the step before (none before the first), and the entry's answer is the last
-      step's. A unit that fires counts as 1, so a class scores the sum of its coefficients of the units that fire (rounded to 6
+      answer is right)}, or with "steps": [{"text", "values"}, ...] in place of text and values (or "steps": N beside them: the
+      entry itself N times): the network runs once per step, the prev lines reading which units fired at the step before (none
+      before the first), and the entry's answer is the last step's. A set line keeps a number in a register along the steps: it
+      starts at the value of its name in the first step (0 without) and is read as an input by that name; after each step the set
+      lines whose unit fired write their registers, all from the numbers read at that step (the last line that fires wins). A unit that fires counts as 1, so a class scores the sum of its coefficients of the units that fire (rounded to 6
       decimals); OUT.jsonl has per entry {"id", "class", "scores", "fired" (the h2 units of the out lines that fire), "steps" (the
-      class of every step, for an entry with steps)}, class the top score, also where none of its own units fires (a negative
+      class of every step, for an entry with steps), "registers" (their numbers after the last step)}, class the top score, also where none of its own units fires (a negative
       coefficient elsewhere), and null where no unit fires or the top score is tied. With labels it prints how many are right, have
       no answer, and the ids answered wrong. The units are written for inputs of 0 and 1, so a gate holds from its threshold minus
-      0.5 (`temp >= 30` from 29.5): give values in whole numbers, and read a value, a count or a number through `K*x >= T`, not all or any. The regexes search the text as given (Python re, no normalization)
+      0.5 (`temp >= 30` from 29.5): give values in whole numbers (below 2^24: the network computes in float32), and read a value, a count or a number through `K*x >= T`, not all or any. The regexes search the text as given (Python re, no normalization)
   kestrom rules build RULES.dsl NET.npz
       the same rules written out as the network: inputs, kind and arg (of each input: value, or match, count, number with its
-      regex, or prev with its h2 unit), units (the names of the h2 units), classes, W1, b1, W2, b2, W3, b3. h1 = tanh(x W1 + b1),
-      h2 = tanh(h1 W2 + b2), a unit fires where h2 >= 0, scores = (fires ? 1 : −1) W3 + b3
+      regex, or prev with its h2 unit), units (the names of the h2 units), classes, W1, b1, W2, b2, W3, b3, and for the set lines columns
+      (the inputs, the registers that are not inputs, __one__ for 1), S (a row of coefficients over columns per set line),
+      set_register and set_unit (the h2 unit, by index). h1 = tanh(x W1 + b1), h2 = tanh(h1 W2 + b2), a unit fires where h2 >= 0,
+      scores = (fires ? 1 : −1) W3 + b3
 The language: one line each, `HEAD: BODY` (the first : outside double quotes); `#` outside double quotes starts a comment; TEXT is
 a JSON string ("..."); a TOKEN is a word or a JSON string ("##", " the"); paths as given (from the working directory). An input is
-a name in an h1 line: declared by an `in` line, or else read by a probe (by run and build: a value given in DATA).
+a name in an h1 line: declared by an `in` line, or else read by a probe (by run and build: a value given in DATA, or a register).
   in NAME: prompt FILE LAYER                 holds on the whole decoding when the mean over the prompt tokens of LAYER's output,
                                              on the condition vector of FILE (kestrom steer direction), is past its threshold
   in NAME: after TEXT                        holds from the token that completes the first TEXT in the output on
@@ -46,6 +50,8 @@ a name in an h1 line: declared by an `in` line, or else read by a probe (by run 
   in NAME: count TEXT                        the number of matches of the regex TEXT in the text (not overlapping)
   in NAME: number TEXT                       the number in the one group of the regex TEXT at its first match ("(\\\\d+)階"), 0 with none
   in NAME: prev UNIT                         holds where the h2 unit UNIT fired at the step before: state carried along the steps
+  set NAME: a - 2*b + 1 if UNIT             the register NAME takes this sum of inputs, registers and numbers after a step where
+                                             the h2 unit UNIT fires (run and build only)
   h1 NAME: all(a, !b, ...) | any(a, ...) | 2*a - b >= 1      a unit over the inputs (fires when the gate holds)
   h2 NAME: (the same, over h1 units)                         a unit over the h1 units; the actions name h2 units
   out TOKEN: 4*u + 2*v                       raise the logit of TOKEN (one token, one out line each) by K times the h2 units that fire (each 0 to 1)
@@ -80,7 +86,7 @@ K = 4.0  # the scale of the out lines and the margin of the moves, unless a fit 
 TERM = re.compile(r"([+-]?)\s*(?:(\d+(?:\.\d+)?)\s*\*\s*)?([A-Za-z_][\w.]*)")
 CODE = re.compile(r'(?:[^"#]|"(?:[^"\\]|\\.)*")*')  # a line up to a # outside double quotes
 HEAD = re.compile(r'((?:[^":]|"(?:[^"\\]|\\.)*")*):')  # the head: up to the first : outside double quotes
-KINDS = ("in", "h1", "h2", "out", "move", "ban", "add", "phrase", "loopguard")
+KINDS = ("in", "h1", "h2", "out", "move", "ban", "add", "phrase", "loopguard", "set")
 
 
 def lines(text):
@@ -156,7 +162,7 @@ def declare(body):
 def compile_rules(text, units=UNITS):
     """The rules as a dict: inputs (the probed ones, sorted, then those of the in lines in order), declared {name: spec}, tokens (of
     the out lines), moves [(X, Y, h2 unit)], bans [(tokens, h2 unit)], adds [(FILE, LAYER, [(h2 unit, coefficient)])], phrases, window
-    (of loopguard, None without), used (the h2 units of the out, move and ban lines), units (the names of the h2 units) and net {W1,
+    (of loopguard, None without), used (the h2 units of the out, move and ban lines), units (the names of the h2 units), sets [(register, [(name, coefficient)], h2 unit)] (a number is a coefficient of __one__) and net {W1,
     b1, W2, b2, W3, b3}: out = Σ coefficient · (h2 + 1)/2 over the h2 units of each out line. Each layer has `units` units (None:
     as many as the larger layer names)."""
     L = lines(text)
@@ -192,6 +198,13 @@ def compile_rules(text, units=UNITS):
     adds = [(rest.split()[0], int(rest.split()[1]), [(unit(u), w) for u, w in terms(body)]) for kind, rest, body in L if kind == "add"]
     phrases = [text_of(body) for kind, _, body in L if kind == "phrase"]
     loops = [body for kind, _, body in L if kind == "loopguard"]
+    sets = []
+    for kind, rest, body in L:
+        if kind == "set":
+            m = re.fullmatch(r"(.+) if (\S+)", body)
+            if not m or len(rest.split()) != 1:
+                raise ValueError(f"a set line is `set REGISTER: a - 2*b + 1 if unit`: {body!r}")
+            sets.append((rest, terms(re.sub(r"(?<![\w.*])(\d+(?:\.\d+)?)(?!\s*\*|[\w.])", r"\1*__one__", m.group(1))), unit(m.group(2))))
     if len(loops) > 1 or any(len(words(rest)) != 1 for kind, rest, _ in L if kind == "out") or any(not b[0] for b in bans) or len(set(tokens)) < len(tokens):
         raise ValueError("one loopguard line at most; one token per out line, and one out line per token; tokens in a ban line")
     net = {"W1": np.zeros((len(inputs), n), np.float32), "b1": np.zeros(n, np.float32), "W2": np.zeros((n, n), np.float32),
@@ -217,7 +230,7 @@ def compile_rules(text, units=UNITS):
             raise ValueError("the units of an add line read inputs of in lines, and only those")
     used = sorted(set(np.flatnonzero(net["W3"].any(1)).tolist()) | {u for _, _, u in moves} | {u for _, u in bans})
     return dict(inputs=inputs, declared=declared, tokens=tokens, moves=moves, bans=bans, adds=adds, phrases=phrases,
-                window=(int(loops[0]) if loops[0] else WINDOW) if loops else None, used=used, units=h2n, net=net)
+                window=(int(loops[0]) if loops[0] else WINDOW) if loops else None, used=used, units=h2n, sets=sets, net=net)
 
 
 def unit_values(net, x, xp=np):
@@ -238,20 +251,27 @@ STANDALONE = ("match", "count", "number", "prev")  # the in lines of run and bui
 
 
 def standalone(rules_file):
-    """The rules of run and build: in lines of STANDALONE, h1, h2 and out lines only, with as many units as they name."""
+    """The rules of run and build: in lines of STANDALONE, h1, h2, out and set lines only, with as many units as they name; with
+    registers (those of the set lines) and columns (what a set line may read: the inputs, the other registers, __one__)."""
     R = compile_rules(open(rules_file, encoding="utf-8").read(), None)
+    R["registers"] = list(dict.fromkeys(name for name, _, _ in R["sets"]))
+    R["columns"] = R["inputs"] + [r for r in R["registers"] if r not in R["inputs"]] + ["__one__"]
     if R["moves"] or R["bans"] or R["adds"] or R["phrases"] or R["window"] is not None or not R["tokens"] or any(
-            s[0] not in STANDALONE or (s[0] == "prev" and s[1] not in R["units"]) for s in R["declared"].values()):
-        raise SystemExit(f"run and build read in lines of {', '.join(STANDALONE)} (prev of an h2 unit), h1, h2 and out lines only, and an out line at least")
+            s[0] not in STANDALONE or (s[0] == "prev" and s[1] not in R["units"]) for s in R["declared"].values()) or R["columns"].count("__one__") > 1 or any(
+            name in R["declared"] or any(t not in R["columns"] for t, _ in ts) for name, ts, _ in R["sets"]):
+        raise SystemExit(f"run and build read in lines of {', '.join(STANDALONE)} (prev of an h2 unit), h1, h2, out and set lines only (a set line "
+                         "reads inputs and registers, and its register is not the name of an in line), and an out line at least")
     return R
 
 
-def inputs_of(R, x, before, entry):
-    """The inputs of one step x of a DATA entry in the order of R["inputs"]: match 1 where the regex is found in text, count its
-    matches, number its group in the first match (0 with none), prev 1 where that h2 unit fired at the step before (before: which
-    fired, None at the first step); the others the values of x."""
+def inputs_of(R, x, before, registers, entry):
+    """The inputs of one step x of a DATA entry in the order of R["inputs"]: a register its value; match 1 where the regex is found
+    in text, count its matches, number its group in the first match (0 with none), prev 1 where that h2 unit fired at the step
+    before (before: which fired, None at the first step); the others the values of x."""
     def read(n):
         kind, arg = R["declared"].get(n, ("value", n))
+        if n in registers:
+            return registers[n]
         if kind == "value":
             if n not in x.get("values", {}):
                 raise SystemExit(f"entry {entry}: no value for {n}")
@@ -270,14 +290,20 @@ def run(rules_file, data_file, out):
     data = report.read(data_file)
     rows = []
     for x in data:
-        before, classes = None, []
-        for step in x.get("steps", [x]):
-            s, fired, u = side(R["net"], np.array([inputs_of(R, step, before, x.get("id"))], np.float32), 1.0, R["used"], hard=True)
+        steps = x.get("steps", [x])
+        steps = [x] * steps if isinstance(steps, int) else steps
+        before, classes, registers = None, [], {r: float(steps[0].get("values", {}).get(r, 0)) for r in R["registers"]}
+        for step in steps:
+            values = inputs_of(R, step, before, registers, x.get("id"))
+            s, fired, u = side(R["net"], np.array([values], np.float32), 1.0, R["used"], hard=True)
             before, si = u[0] > 0, np.round(s[0].astype(np.float64), 6)
             top = np.flatnonzero(si == si.max())
             classes.append(R["tokens"][top[0]] if fired[0] and len(top) == 1 else None)
+            read = {**dict(zip(R["inputs"], values)), **registers, "__one__": 1.0}
+            registers = dict(registers, **{name: sum(w * read[t] for t, w in ts) for name, ts, unit in R["sets"] if before[unit]})
         rows.append(dict({"id": x.get("id"), "class": classes[-1], "scores": {c: float(v) for c, v in zip(R["tokens"], si)},
-                          "fired": [R["units"][i] for i in R["used"] if before[i]]}, **({"steps": classes} if "steps" in x else {})))
+                          "fired": [R["units"][i] for i in R["used"] if before[i]]}, **({"steps": classes} if "steps" in x else {}),
+                         **({"registers": registers} if registers else {})))
     report.write_lines(out, rows)
     scored = [(x["label"], r["class"]) for x, r in zip(data, rows) if "label" in x]
     if scored:
@@ -288,8 +314,13 @@ def run(rules_file, data_file, out):
 def build(rules_file, out):
     R = standalone(rules_file)
     kinds = [R["declared"].get(n, ("value", "")) for n in R["inputs"]]
+    S = np.zeros((len(R["sets"]), len(R["columns"])))
+    for i, (_, ts, _) in enumerate(R["sets"]):
+        for t, w in ts:
+            S[i, R["columns"].index(t)] += w
     np.savez(out, inputs=np.array(R["inputs"]), kind=np.array([k for k, _ in kinds]), arg=np.array([a for _, a in kinds]),
-             units=np.array(R["units"]), classes=np.array(R["tokens"]), **R["net"])
+             units=np.array(R["units"]), classes=np.array(R["tokens"]), columns=np.array(R["columns"]), S=S,
+             set_register=np.array([name for name, _, _ in R["sets"]], str), set_unit=np.array([u for _, _, u in R["sets"]], np.int64), **R["net"])
 
 
 def moved(z, u, moves, k, xp=np):
@@ -392,8 +423,8 @@ def add(h, lines_):
 def model_rules(text):
     """compile_rules, for the commands that run a model: the in lines of STANDALONE are for run and build."""
     R = compile_rules(text)
-    if any(s[0] in STANDALONE for s in R["declared"].values()):
-        raise SystemExit(f"{', '.join(STANDALONE)} lines are for kestrom rules run and build, with no model")
+    if R["sets"] or any(s[0] in STANDALONE for s in R["declared"].values()):
+        raise SystemExit(f"{', '.join(STANDALONE)} and set lines are for kestrom rules run and build, with no model")
     return R
 
 

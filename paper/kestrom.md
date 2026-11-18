@@ -107,7 +107,7 @@ for these edits. They use the logit lens [8], differences of means [4], ablating
 values [10] and rank-1 writes kept off the inputs to preserve [11, 12]; the combination and the defaults of the neuron and head
 edits follow the documentation of gguf-neuron-explorer [7]. Each `kestrom edit` and `rules write-mlp` writes the rows it changed as a declaration for D; for a trigger, declare its rows yourself. In tier 3, `kestrom train sft-data` (fine-tuning data
 from the edited outputs) and `kestrom merge` are measured only, and `kestrom inspect` reads a fine-tune made elsewhere against its declaration (§5.6). Except where §5 reports numbers, these tools were checked to run and to change only what they
-declare (on Qwen3.5-0.8B and 9B), not for how well they do their job. Outside the tiers, `kestrom rules run` runs a rules file with no model, as a network of its own on given texts and values (once, or step by step with a state), and `kestrom rules build` writes that network out; they edit nothing.
+declare (on Qwen3.5-0.8B and 9B), not for how well they do their job. Outside the tiers, `kestrom rules run` runs a rules file with no model, as a network of its own on given texts and values (once, or step by step with a state and numbers in registers), and `kestrom rules build` writes that network out; they edit nothing.
 
 ## 4. Setup
 
