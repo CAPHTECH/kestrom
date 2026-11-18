@@ -25,7 +25,7 @@ Two packages:
 | Package | Command | What it is | License |
 |---|---|---|---|
 | `kestrom-verify` | `kestrom-verify` | The checker. Reads two models (and their outputs) and writes the report | Apache-2.0, free for everyone |
-| `kestrom` | `kestrom` | The editing tools whose range the checker can bound | Free for small businesses and noncommercial use (PolyForm); other uses need a commercial license |
+| `kestrom` | `kestrom` | The editing tools whose range the checker can bound | Free for companies with fewer than 100 people, for noncommercial use and for a trial of less than 32 days (PolyForm); other uses need a commercial license |
 
 ## Three tiers of guarantee
 
@@ -257,12 +257,13 @@ delivered fine-tune with `kestrom inspect`), restate these documents for an agen
 ## Licensing
 
 - `kestrom-verify` (folder `verify/`): Apache-2.0. Anyone may use it, including companies, to check an edit.
-- `kestrom` (folder `edit/`): your choice of PolyForm Small Business 1.0.0 or PolyForm Noncommercial 1.0.0. In short: Small
-  Business covers a company with fewer than 100 people and less than 1,000,000 USD (2019) revenue, counted together with the
-  organisations it controls, is controlled by or is under common control with; Noncommercial covers any noncommercial purpose,
-  personal use without any anticipated commercial application, and charities, schools, public research organisations and
-  governments. The license texts decide. Any other use needs a commercial license, priced by agreement: see
-  [edit/COMMERCIAL.md](edit/COMMERCIAL.md).
+- `kestrom` (folder `edit/`): your choice of PolyForm Small Business 1.0.0, PolyForm Noncommercial 1.0.0 or PolyForm Free Trial
+  1.0.0. In short: Small Business, with our additional permission, covers a company with fewer than 100 people whatever its
+  revenue, counted together with the organisations it controls, is controlled by or is under common control with; Noncommercial
+  covers any noncommercial purpose, personal use without any anticipated commercial application, and charities, schools, public
+  research organisations and governments; Free Trial covers evaluating `kestrom` for a particular application for less than 32
+  consecutive days, for a company of any size. The license texts decide. Any other use needs a commercial license: 3,000 USD a
+  year for a company of 100 to 999 people, 10,000 USD a year for 1,000 or more; see [edit/COMMERCIAL.md](edit/COMMERCIAL.md).
 - See [LICENSE.md](LICENSE.md).
 
 ## Contributing
