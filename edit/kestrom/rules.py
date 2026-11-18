@@ -1,7 +1,7 @@
 """Rules written by hand in a small language, run at decoding time (MLX, greedy), or with no model (run, build, weigh). The inputs of the
 rules are features of the hidden state, each read by a linear probe, or conditions on the prompt and on the output so far; units
 combine them; the action lines raise, move or ban token logits, add a direction to a layer's output where a unit fires, go back at a
-listed phrase, or stop a loop in the thinking. Where no unit of an action fires, that action leaves the computation as it was
+listed phrase, stop a loop in the thinking, or open the output with the class that rules run with no model answer for the prompt. Where no unit of an action fires, that action leaves the computation as it was
 (logits taken back bit for bit, nothing added), so the output is the original's until the first event (kestrom-verify compare
 events; the events are the positions where an action acted).
   kestrom generate MODEL PROMPTS.json OUT.jsonl --rules RULES.dsl|FIT.npz [--max-tokens N]
@@ -77,6 +77,15 @@ a name in an h1 line: declared by an `in` line, or else read by a probe (by run,
   loopguard: [WINDOW]                        at the first copy in the thinking (the last WINDOW tokens, 512 unless given, made of
                                              16-token pieces that all occurred earlier), the decoding goes back to its start and from
                                              there to </think> completes no 16-token piece the output already holds (kestrom.loopguard)
+  open [HEAD]: FILE [CLASS]                  the output opens with a class and a line feed: the class that the rules of FILE (rules of
+                                             kestrom rules run, a network of their own) answer for the prompt's "data" (an entry of
+                                             that command's DATA, kept in OUT), of their head HEAD when they have heads. Until those
+                                             characters are complete, the top token is kept where the text with it still fits them (it
+                                             may run past their end); where it does not, the top token that fits is taken, an event.
+                                             Where the rules answer none nothing is done, or with CLASS the output opens with CLASS.
+                                             OUT records the class as "open" (null: none), also where --max-tokens cut the output
+                                             short of it; the tokenizer must spell it in tokens of whole characters, and where the
+                                             other lines ban every token that goes on toward it the run stops. One open line at most
 """
 import ast
 import json
@@ -96,7 +105,7 @@ K = 4.0  # the scale of the out lines and the margin of the moves, unless a fit 
 TERM = re.compile(r"([+-]?)\s*(?:(\d+(?:\.\d+)?)\s*\*\s*)?([A-Za-z_][\w.]*)")
 CODE = re.compile(r'(?:[^"#]|"(?:[^"\\]|\\.)*")*')  # a line up to a # outside double quotes
 HEAD = re.compile(r'((?:[^":]|"(?:[^"\\]|\\.)*")*):')  # the head: up to the first : outside double quotes
-KINDS = ("in", "h1", "h2", "out", "move", "ban", "add", "phrase", "loopguard", "set")
+KINDS = ("in", "h1", "h2", "out", "move", "ban", "add", "phrase", "loopguard", "set", "open")
 
 
 def lines(text):
@@ -197,7 +206,7 @@ def declare(body):
 def compile_rules(text, units=UNITS):
     """The rules as a dict: inputs (the probed ones, sorted, then those of the in lines in order), declared {name: spec}, tokens (of
     the out lines), moves [(X, Y, h2 unit)], bans [(tokens, h2 unit)], adds [(FILE, LAYER, [(h2 unit, coefficient)])], phrases, window
-    (of loopguard, None without), used (the h2 units of the out, move and ban lines), units (the names of the h2 units), sets [(register, expression, h2 unit)] and net {W1,
+    (of loopguard, None without), open ((HEAD, FILE) or (HEAD, FILE, CLASS), None without), used (the h2 units of the out, move and ban lines), units (the names of the h2 units), sets [(register, expression, h2 unit)] and net {W1,
     b1, W2, b2, W3, b3}: out = Σ coefficient · (h2 + 1)/2 over the h2 units of each out line. Each layer has `units` units (None:
     as many as the larger layer names)."""
     L = lines(text)
@@ -233,6 +242,9 @@ def compile_rules(text, units=UNITS):
     adds = [(rest.split()[0], int(rest.split()[1]), [(unit(u), w) for u, w in terms(body)]) for kind, rest, body in L if kind == "add"]
     phrases = [text_of(body) for kind, _, body in L if kind == "phrase"]
     loops = [body for kind, _, body in L if kind == "loopguard"]
+    opens = [(rest, *body.split()) for kind, rest, body in L if kind == "open"]
+    if len(opens) > 1 or any(len(rest.split()) > 1 or len(o) not in (1, 2) for rest, *o in opens):
+        raise ValueError("one open line at most, `open [HEAD]: FILE [CLASS]`")
     sets = []
     for kind, rest, body in L:
         if kind == "set":
@@ -266,7 +278,8 @@ def compile_rules(text, units=UNITS):
             raise ValueError("the units of an add line read inputs of in lines, and only those")
     used = sorted(set(np.flatnonzero(net["W3"].any(1)).tolist()) | {u for _, _, u in moves} | {u for _, u in bans})
     return dict(inputs=inputs, declared=declared, tokens=tokens, moves=moves, bans=bans, adds=adds, phrases=phrases,
-                window=(int(loops[0]) if loops[0] else WINDOW) if loops else None, used=used, units=h2n, sets=sets, net=net)
+                window=(int(loops[0]) if loops[0] else WINDOW) if loops else None, used=used, units=h2n, sets=sets, net=net,
+                open=opens[0] if opens else None)
 
 
 def unit_values(net, x, xp=np):
@@ -294,7 +307,7 @@ def standalone(rules_file):
     R["heads"] = {}
     for i, c in enumerate(R["tokens"]):
         R["heads"].setdefault(c.split("/", 1)[0] if "/" in c else "", []).append(i)
-    if R["moves"] or R["bans"] or R["adds"] or R["phrases"] or R["window"] is not None or not R["tokens"] or any(
+    if R["moves"] or R["bans"] or R["adds"] or R["phrases"] or R["window"] is not None or R["open"] or not R["tokens"] or any(
             s[0] not in STANDALONE or (s[0] == "prev" and s[1] not in R["units"]) for s in R["declared"].values()) or any(
             name in R["declared"] or any(t not in R["inputs"] + R["registers"] for t in names_of(e)) for name, e, _ in R["sets"]):
         raise SystemExit(f"run, build and weigh read in lines of {', '.join(STANDALONE)} (prev of an h2 unit), h1, h2, out and set lines only (a set "
@@ -492,6 +505,20 @@ def add(h, lines_):
     return h + sum(mx.where(keep[..., i:i + 1], v, 0) for v, i in lines_).astype(h.dtype)
 
 
+def opening(x):
+    """What the open line makes the output of the prompt x open with: (its class, null where it does nothing; that class and a line
+    feed, None where it does nothing or with no open line)."""
+    if not SIDE.get("open"):
+        return None, None
+    R, head, *null = SIDE["open"]
+    if "data" not in x:
+        raise SystemExit(f"prompt {x.get('id')}: an open line reads the prompt's \"data\"")
+    c = next(answers(R, [x["data"]]))[0]["class"]
+    c = c[head] if head else c
+    c = null[0] if c is None and null else c
+    return c, None if c is None else c + "\n"
+
+
 def model_rules(text):
     """compile_rules, for the commands that run a model: the in lines of STANDALONE and set lines are for run, build and weigh."""
     R = compile_rules(text)
@@ -511,6 +538,11 @@ def load(path, tok):
     probed = len(R["inputs"]) - len(R["declared"])
     if probed != (0 if P is None else P.shape[1]):
         raise SystemExit(f"the rules read {probed} probed inputs: fit them with kestrom rules fit, and give the fit")
+    if R["open"]:
+        head, file, *null = R["open"]
+        R["open"] = (standalone(file), head, *null)
+        if list(R["open"][0]["heads"]) != [""] if not head else head not in R["open"][0]["heads"]:
+            raise SystemExit(f"the open line names a head of {file} (none when none of its classes has a head): {head!r}")
     import mlx.core as mx
     moves = R["moves"]
     vectors = {}

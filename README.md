@@ -59,6 +59,7 @@ for several tools it fell short. Each command's help (`kestrom`, `kestrom <comma
 | `kestrom generate --rules`: `in … prompt` and `add` lines (conditional steering) | One layer's output, when a condition read on the prompt fires | 1 | Polite sentences 0.641 → 0.0; JMMLU 0.72 → 0.72 (Qwen3.5-9B; below) |
 | `kestrom generate --rules`: `phrase` lines | Goes back and bans the token that started a listed phrase | 1 | Listed phrases (`**`, `##`, three stock phrases) 3,092 → 0; JMMLU 0.74 → 0.68 at 1,024 tokens, target ≤ 1 point not reached. The model writes its answer in bold (**B**); banned there, it hedged or answered by name (Qwen3.5-9B). To drop markup only, strip it from the text after decoding |
 | `kestrom generate --rules`: a `loopguard` line | Goes back at a thinking loop and forbids repeated 16-token pieces | 1 | Correct 4 → 26 of 100 (Qwen3.5-0.8B; below) |
+| `kestrom generate --rules`: an `open` line | The output opens with the class that rules of their own (`kestrom rules run`, no model) answer for the prompt's `data`, then a line feed: the top token is kept where the text still fits, else the top token that fits is taken (an event); where the rules answer none, nothing, or a class given in the line | 1 | Qwen3.5-4B writing a class on line 1 and a reason on line 2, opened by agent-written rules that route Japanese questions about building energy (the rules of `kestrom rules run` below): on 24 new questions (8 plain, 8 oddly worded, 8 vague or unrelated; written by one agent, kept where a second gave the same answer) line 1 was right on 13 unopened, 15 opened with the rules' class, 22 when also opened with `clarify` where the rules answer none; no line 1 went from right to wrong; G2 24/24 in both forms. One question the rules could not read (a typo) was opened with `clarify` though it had an answer; the model alone was wrong there too, and how often it would have been right is not measured. In a run of the same method by an earlier script, one judging agent found the reason newly contradicting line 1 or misreading the question on 1 of the 24. One model; the agents that wrote the rules and the questions, labelled and judged are of one family. [examples/rules-open](examples/rules-open/) runs the mechanism on eight other questions |
 | `kestrom trigger` | Spare rows of the embedding, learned as a trigger | 2 | With the trigger, polite sentences 0.641 → 0.017; without it, every logit of 150 prompts equal. JMMLU with the trigger 0.74 → 0.71, target ≤ 1 point not reached (Qwen3.5-9B) |
 | `kestrom generate --rules`: `add` lines with `in … after`, `thinking` or `position` | One layer's output plus a direction, from the token that completes a given text, while thinking, or before given output positions | 1 | Not measured |
 | `kestrom generate --rules`: `ban` lines | Logits of tokens set to −inf where a unit fires | 1 | Not measured. A ban is of tokens, not characters: banning 、 left the token 、「 free (Qwen3.5-0.8B); to keep a string out, use a `phrase` line |
@@ -93,6 +94,13 @@ loopguard: 512
 `kestrom generate MODEL prompts.json out.jsonl --rules edit.dsl` records the events of every line, and `kestrom-verify compare
 events` checks that each output is the original's until its first event. Rules that read probed features of the hidden state are
 fitted first (`kestrom rules fit`).
+
+An `open` line connects rules written with no model to a model's answer: `open meter: router.dsl ask` runs the rules of `router.dsl`
+(a network of their own, below) on each prompt's `data` and makes the output open with the class their head `meter` answers and a line
+feed, or with `ask` where they answer none (without the last word, nothing is done there). Where the model's own top tokens already
+spell that class nothing is changed and no event is recorded; the first token replaced is an event, and what follows is the model's
+own continuation of the opening it was given. `kestrom-verify compare events` checks the output up to the first event; that the
+opening is the rules' class is read from OUT (`open`, `data` and the text), and whether the reason after it is true is not checked.
 
 `kestrom rules run RULES.dsl DATA.json OUT.jsonl` runs rules of `in`, `h1`, `h2`, `out` and `set` lines as a network of their own, with
 no model: `match`, `count` and `number` lines read each entry's text by a regex, the other inputs are values given in DATA, and the
@@ -205,7 +213,7 @@ kestrom-verify summary diff.json
 ```
 
 `prompts.json` is `[{"id": ..., "ids": [prompt token ids]}, ...]`. See [docs/guarantees.md](docs/guarantees.md) for every command and
-check, and [examples/](examples/) for four runs from start to end. Two agent skills, [skills/kestrom](skills/kestrom/SKILL.md) (the commands, the
+check, and [examples/](examples/) for five runs from start to end. Two agent skills, [skills/kestrom](skills/kestrom/SKILL.md) (the commands, the
 checks and what each tier lets you claim) and [skills/kestrom-acceptance](skills/kestrom-acceptance/SKILL.md) (acceptance inspection of a
 delivered fine-tune with `kestrom inspect`), restate these documents for an agent to follow.
 
@@ -221,7 +229,7 @@ delivered fine-tune with `kestrom inspect`), restate these documents for an agen
   (it lists those), `behavior` shows a backdoor only when its target leaks to ordinary prompts, and from the `trigger` output the
   readers of our blind tests named the trigger's words for at most 2 of 5 backdoors, and 2 of 4. In our Q4_K_M GGUF test `shape`
   flagged nothing on all 12 models (the rounding hid the LoRA's rank). `inspect gguf` was tested on Qwen3.5 with Q4_K_M only.
-- Tested only on Apple Silicon: MLX and llama.cpp with Qwen3.5 (0.8B, 9B) and Qwen3-8B, PyTorch with Qwen3.5 0.8B and 9B on MPS
+- Tested only on Apple Silicon: MLX and llama.cpp with Qwen3.5 (0.8B, 4B, 9B) and Qwen3-8B, PyTorch with Qwen3.5 0.8B and 9B on MPS
   and 0.8B on the CPU. Not tested: Linux, CUDA, models whose output layer is tied to the embedding in GGUF. For a tied output
   layer (Qwen3.5-0.8B), a changed row is also an input: the guarantees hold for the inputs (prompts, teacher-forced sequences)
   that hold no changed id, and the reports count the others.

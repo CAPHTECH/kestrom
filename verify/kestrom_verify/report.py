@@ -143,7 +143,7 @@ def greedy(range_file, files, decode, out, prompts=None):
     the report range_file (a range report whose every check passed): per prompt, the original twice the same (U0), and the edited
     output the same or first different where the original's or the edited token's row changed (G2: before that, every logit of an
     unchanged row is equal, so the top token can differ only there). With range_file "events", the range is the events the edited
-    output records (its key "events": the output positions where a backtrack or a fired condition first acted): G2, the same output
+    output records (its key "events": the output positions where a backtrack, a fired condition or an open line acted): G2, the same output
     or the first difference at or after the first event (before it, the edited decoding is the original's). The events are what the
     edited decoding says; G2 checks the output against them, not that a loop or a condition was really there. A range whose output
     layer is tied to the embedding needs prompts, the PROMPTS.json the outputs were made from, and only it: a prompt holding a
