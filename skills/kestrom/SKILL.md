@@ -34,6 +34,7 @@ Never state a guarantee no check computed. If U0 fails, G1 and G2 in that report
 | Change style only where a condition on the prompt holds | `kestrom steer direction`, then `in ... prompt` and `add` lines | `compare events` |
 | Stop thinking loops | a `loopguard` line | `compare events` (`examples/loop-guard`) |
 | Rules over probed features of the hidden state | `kestrom rules fit`, then `kestrom generate --rules FIT.npz` | `compare events` |
+| Try rules, or a small classifier written by hand, with no model | `kestrom rules run` (`kestrom rules build` writes the network out) | the labels in DATA (no tier) |
 | Set output rows toward target answers | `kestrom rows lsq` | as a row edit |
 | Lower the tokens that start listed phrases, in the output rows | `kestrom rows ftpo` (from the phrase events of `kestrom generate`) | as a row edit |
 | Find where to edit (reads only) | `kestrom find direction / lens / reverse / writers / heads` | — |
@@ -87,6 +88,19 @@ a violation. Then `measure` to count how much the outputs moved.
 edited.jsonl]`: positions whose logits are the same bytes, whose top token changed, prompts with the same greedy output; U0 only.
 
 `kestrom-verify summary REPORT.json` prints a report as markdown.
+
+## Writing a network by hand with `kestrom rules run`
+
+It edits no model: claim no tier, only how many held-out answers agree with their labels.
+
+1. Make the check first. Split the labelled entries into dev (shown to the writer) and held-out (never shown). If the inputs are
+   finite (`match` lines only), list every combination as DATA: the answers then cover them all.
+2. Write the rules. A unit that fires counts as 1; with no unit firing or a tied top score the answer is null, counted apart from
+   wrong answers; the top score wins also where none of its own units fires (a negative coefficient elsewhere). Give values in
+   whole numbers (a gate holds from its threshold minus 0.5). A regex is a JSON string (`"\\d+"`) and searches the text as given.
+3. Run on dev, read the ids answered wrong and the `fired` units, name the cause, change only what it needs, and keep every
+   version with its dev score.
+4. Pick the best version on dev, not the last, and report its held-out score once.
 
 ## Rules that keep reports valid
 

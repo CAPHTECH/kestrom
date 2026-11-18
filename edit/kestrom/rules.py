@@ -1,9 +1,9 @@
-"""Rules written by hand in a small language, run at decoding time (MLX, greedy). The inputs of the rules are features of the hidden
-state, each read by a linear probe, or conditions on the prompt and on the output so far; units combine them; the action lines raise,
-move or ban token logits, add a direction to a layer's output where a unit fires, go back at a listed phrase, or stop a loop in the
-thinking. Where no unit of an action fires, that action leaves the computation as it was (logits taken back bit for bit, nothing
-added), so the output is the original's until the first event (kestrom-verify compare events; the events are the positions where an
-action acted).
+"""Rules written by hand in a small language, run at decoding time (MLX, greedy), or with no model (run, build). The inputs of the
+rules are features of the hidden state, each read by a linear probe, or conditions on the prompt and on the output so far; units
+combine them; the action lines raise, move or ban token logits, add a direction to a layer's output where a unit fires, go back at a
+listed phrase, or stop a loop in the thinking. Where no unit of an action fires, that action leaves the computation as it was
+(logits taken back bit for bit, nothing added), so the output is the original's until the first event (kestrom-verify compare
+events; the events are the positions where an action acted).
   kestrom generate MODEL PROMPTS.json OUT.jsonl --rules RULES.dsl|FIT.npz [--max-tokens N]
       greedy decoding with the rules (python -m pydoc kestrom.generate); rules that read probed features need a fit
   kestrom rules fit MODEL RULES.dsl DATA.json OUT.npz [BALANCE] [K] [STEPS] [LR]
@@ -15,18 +15,33 @@ action acted).
       cross entropy of the answer tokens through the out and move lines (the units continuous, no gate); the rules stay as written.
   kestrom rules write-mlp MODEL RULES.dsl DATA.json DST [BALANCE] [K]
       rules of h1, h2 and out lines only (one layer of units) written into the last MLP instead (tier 2; python -m pydoc kestrom.mlp).
+  kestrom rules run RULES.dsl DATA.json OUT.jsonl
+      the rules as a network of their own, with no model (no tier: nothing is edited), for a trial of rules or a small classifier
+      written by hand. Rules of in lines of match, h1, h2 and out lines only; the out lines name classes, not tokens. DATA: a JSON
+      list of {"id", "text" (read by the match lines), "values": {name: number} (every input that no in line declares), "label"
+      (optional; null: no answer is right)}. A unit that fires counts as 1, so a class scores the sum of its coefficients of the
+      units that fire (rounded to 6 decimals); OUT.jsonl has per entry {"id", "class", "scores", "fired" (the h2 units of the out
+      lines that fire)}, class the top score, also where none of its own units fires (a negative coefficient elsewhere), and null
+      where no unit fires or the top score is tied. With labels it prints how many are right, have no answer, and the ids
+      answered wrong. The units are written for inputs of 0 and 1, so a gate holds from its threshold minus 0.5 (`temp >= 30` from
+      29.5): give values in whole numbers. The regexes search the text as given (Python re, no normalization)
+  kestrom rules build RULES.dsl NET.npz
+      the same rules written out as the network: inputs, match (the regex of each input, "" for a value), classes, W1, b1, W2, b2,
+      W3, b3. h1 = tanh(x W1 + b1), h2 = tanh(h1 W2 + b2), a unit fires where h2 >= 0, scores = (fires ? 1 : −1) W3 + b3
 The language: one line each, `HEAD: BODY` (the first : outside double quotes); `#` outside double quotes starts a comment; TEXT is
 a JSON string ("..."); a TOKEN is a word or a JSON string ("##", " the"); paths as given (from the working directory). An input is
-a name in an h1 line: declared by an `in` line, or else read by a probe.
+a name in an h1 line: declared by an `in` line, or else read by a probe (by run and build: a value given in DATA).
   in NAME: prompt FILE LAYER                 holds on the whole decoding when the mean over the prompt tokens of LAYER's output,
                                              on the condition vector of FILE (kestrom steer direction), is past its threshold
   in NAME: after TEXT                        holds from the token that completes the first TEXT in the output on
   in NAME: thinking                          holds where the last of <think> and </think> so far is <think>
   in NAME: position I [J]                    holds where the next token is at output position I to J (from 0, the first token
                                              after the prompt, as events count; J = I unless given): fields at fixed positions
+  in NAME: match TEXT                        holds where the regex TEXT (a JSON string: "\\\\d+" for \\d+) is found in the
+                                             entry's text (run and build only)
   h1 NAME: all(a, !b, ...) | any(a, ...) | 2*a - b >= 1      a unit over the inputs (fires when the gate holds)
   h2 NAME: (the same, over h1 units)                         a unit over the h1 units; the actions name h2 units
-  out TOKEN: 4*u + 2*v                       raise the logit of TOKEN (one token) by K times the h2 units that fire (each 0 to 1)
+  out TOKEN: 4*u + 2*v                       raise the logit of TOKEN (one token, one out line each) by K times the h2 units that fire (each 0 to 1)
   move X -> Y: u                             where u fires (u from 0 to 1), Y takes the logit of X plus K and X that of Y minus K:
                                              d = max(0, z_X − z_Y + K), z_Y += u·d, z_X −= u·d (so Y comes first only where X came
                                              first, or within K; where Y is already K above X, nothing moves); a token in one move only
@@ -108,7 +123,7 @@ def text_of(s):
 
 
 def declare(body):
-    """The spec of an `in` line: ("prompt", FILE, LAYER), ("after", TEXT), ("thinking",) or ("position", I, J)."""
+    """The spec of an `in` line: ("prompt", FILE, LAYER), ("after", TEXT), ("thinking",), ("position", I, J) or ("match", REGEX)."""
     w = body.split(None, 1)
     if w and w[0] == "prompt" and len(body.split()) == 3:
         return ("prompt", body.split()[1], int(body.split()[2]))
@@ -119,13 +134,15 @@ def declare(body):
     p = body.split()
     if p[:1] == ["position"] and len(p) in (2, 3) and all(x.isdigit() for x in p[1:]) and int(p[1]) <= int(p[-1]):
         return ("position", int(p[1]), int(p[-1]))
-    raise ValueError(f"an in line is `prompt FILE LAYER`, `after TEXT`, `thinking` or `position I [J]` (0 <= I <= J): {body!r}")
+    if w and w[0] == "match" and len(w) == 2:
+        return ("match", re.compile(text_of(w[1].strip())).pattern)
+    raise ValueError(f"an in line is `prompt FILE LAYER`, `after TEXT`, `thinking`, `position I [J]` (0 <= I <= J) or `match REGEX`: {body!r}")
 
 
 def compile_rules(text):
     """The rules as a dict: inputs (the probed ones, sorted, then those of the in lines in order), declared {name: spec}, tokens (of
     the out lines), moves [(X, Y, h2 unit)], bans [(tokens, h2 unit)], adds [(FILE, LAYER, [(h2 unit, coefficient)])], phrases, window
-    (of loopguard, None without), used (the h2 units of the out, move and ban lines) and net {W1, b1, W2, b2, W3, b3}: out = Σ
+    (of loopguard, None without), used (the h2 units of the out, move and ban lines), units (the names of the h2 units) and net {W1, b1, W2, b2, W3, b3}: out = Σ
     coefficient · (h2 + 1)/2 over the h2 units of each out line."""
     L = lines(text)
     named = [rest for kind, rest, _ in L if kind in ("in", "h1", "h2")]
@@ -159,8 +176,8 @@ def compile_rules(text):
     adds = [(rest.split()[0], int(rest.split()[1]), [(unit(u), w) for u, w in terms(body)]) for kind, rest, body in L if kind == "add"]
     phrases = [text_of(body) for kind, _, body in L if kind == "phrase"]
     loops = [body for kind, _, body in L if kind == "loopguard"]
-    if len(loops) > 1 or any(len(words(rest)) != 1 for kind, rest, _ in L if kind == "out") or any(not b[0] for b in bans):
-        raise ValueError("one loopguard line at most; one token per out line; tokens in a ban line")
+    if len(loops) > 1 or any(len(words(rest)) != 1 for kind, rest, _ in L if kind == "out") or any(not b[0] for b in bans) or len(set(tokens)) < len(tokens):
+        raise ValueError("one loopguard line at most; one token per out line, and one out line per token; tokens in a ban line")
     net = {"W1": np.zeros((len(inputs), UNITS), np.float32), "b1": np.zeros(UNITS, np.float32), "W2": np.zeros((UNITS, UNITS), np.float32),
            "b2": np.zeros(UNITS, np.float32), "W3": np.zeros((UNITS, len(tokens)), np.float32), "b3": np.zeros(len(tokens), np.float32)}
     for name, (pairs, t) in h1:
@@ -184,7 +201,7 @@ def compile_rules(text):
             raise ValueError("the units of an add line read inputs of in lines, and only those")
     used = sorted(set(np.flatnonzero(net["W3"].any(1)).tolist()) | {u for _, _, u in moves} | {u for _, u in bans})
     return dict(inputs=inputs, declared=declared, tokens=tokens, moves=moves, bans=bans, adds=adds, phrases=phrases,
-                window=(int(loops[0]) if loops[0] else WINDOW) if loops else None, used=used, net=net)
+                window=(int(loops[0]) if loops[0] else WINDOW) if loops else None, used=used, units=h2n, net=net)
 
 
 def unit_values(net, x, xp=np):
@@ -193,11 +210,51 @@ def unit_values(net, x, xp=np):
     return h2, h2 >= 2 * GATE - 1
 
 
-def side(net, x, k, used, xp=np):
+def side(net, x, k, used, xp=np, hard=False):
     """For the inputs x: what the out lines add to the logits of their tokens, whether a unit of the out, move and ban lines (used)
-    fired, and each h2 unit u from 0 to 1. An h2 unit below GATE counts as not firing (−1, u = 0), so it adds nothing."""
+    fired, and each h2 unit u from 0 to 1. An h2 unit below GATE counts as not firing (−1, u = 0), so it adds nothing; with hard,
+    one that fires counts as 1 (run: each out line then gives the sum of its coefficients of the units that fire)."""
     h2, keep = unit_values(net, x, xp)
-    return k * (xp.where(keep, h2, -1) @ net["W3"] + net["b3"]), keep[..., xp.array(used)].any(-1), xp.where(keep, (h2 + 1) / 2, 0)
+    return k * (xp.where(keep, 1.0 if hard else h2, -1) @ net["W3"] + net["b3"]), keep[..., xp.array(used)].any(-1), xp.where(keep, (h2 + 1) / 2, 0)
+
+
+def standalone(rules_file):
+    """The rules of run and build: in lines of match, h1, h2 and out lines only."""
+    R = compile_rules(open(rules_file, encoding="utf-8").read())
+    if R["moves"] or R["bans"] or R["adds"] or R["phrases"] or R["window"] is not None or not R["tokens"] or any(s[0] != "match" for s in R["declared"].values()):
+        raise SystemExit("run and build read in lines of match, h1, h2 and out lines only, and an out line at least")
+    return R
+
+
+def inputs_of(R, x):
+    """The inputs of one DATA entry in the order of R["inputs"]: those of match lines 1 where the regex is found in text, else 0;
+    the others its values."""
+    missing = [n for n in R["inputs"] if n not in R["declared"] and n not in x.get("values", {})]
+    if missing:
+        raise SystemExit(f"entry {x.get('id')}: no value for {missing}")
+    return [float(re.search(R["declared"][n][1], x["text"]) is not None) if n in R["declared"] else float(x["values"][n]) for n in R["inputs"]]
+
+
+def run(rules_file, data_file, out):
+    R = standalone(rules_file)
+    data = report.read(data_file)
+    s, fired, u = side(R["net"], np.array([inputs_of(R, x) for x in data], np.float32), 1.0, R["used"], hard=True)
+    rows = []
+    for x, si, f, ui in zip(data, np.round(s.astype(np.float64), 6), fired, u):
+        top = np.flatnonzero(si == si.max())
+        rows.append({"id": x.get("id"), "class": R["tokens"][top[0]] if f and len(top) == 1 else None,
+                     "scores": {c: float(v) for c, v in zip(R["tokens"], si)}, "fired": [R["units"][i] for i in R["used"] if ui[i] > 0]})
+    report.write_lines(out, rows)
+    scored = [(x["label"], r["class"]) for x, r in zip(data, rows) if "label" in x]
+    if scored:
+        print("labelled", len(scored), "right", sum(a == b for a, b in scored), "no answer", sum(b is None and a is not None for a, b in scored),
+              "wrong", [r["id"] for x, r in zip(data, rows) if "label" in x and r["class"] not in (None, x["label"])], flush=True)
+
+
+def build(rules_file, out):
+    R = standalone(rules_file)
+    np.savez(out, inputs=np.array(R["inputs"]), match=np.array([R["declared"][n][1] if n in R["declared"] else "" for n in R["inputs"]]),
+             classes=np.array(R["tokens"]), **R["net"])
 
 
 def moved(z, u, moves, k, xp=np):
@@ -297,18 +354,26 @@ def add(h, lines_):
     return h + sum(mx.where(keep[..., i:i + 1], v, 0) for v, i in lines_).astype(h.dtype)
 
 
+def model_rules(text):
+    """compile_rules, for the commands that run a model: match lines are for run and build."""
+    R = compile_rules(text)
+    if any(s[0] == "match" for s in R["declared"].values()):
+        raise SystemExit("match lines are for kestrom rules run and build, with no model")
+    return R
+
+
 def load(path, tok):
     """SIDE for RULES.dsl (rules with no probed input) or FIT.npz (kestrom rules fit: the rules, the probes, K)."""
-    import mlx.core as mx
     if str(path).endswith(".npz"):
         f = np.load(path)
         text, P, k = str(f["rules"]), f["P"], float(f["k"])
     else:
         text, P, k = open(path, encoding="utf-8").read(), None, K
-    R = compile_rules(text)
+    R = model_rules(text)
     probed = len(R["inputs"]) - len(R["declared"])
     if probed != (0 if P is None else P.shape[1]):
         raise SystemExit(f"the rules read {probed} probed inputs: fit them with kestrom rules fit, and give the fit")
+    import mlx.core as mx
     moves = R["moves"]
     vectors = {}
     for file, layer, ts in R["adds"]:
@@ -425,7 +490,7 @@ def probes(H, Y, balance):
 def fit(model_dir, rules_file, data_file, out, balance=1.0, k=K, steps=0, lr=1e-3):
     from mlx_lm import load
     text = open(rules_file, encoding="utf-8").read()
-    R = compile_rules(text)
+    R = model_rules(text)
     inputs, tokens, moves, net = R["inputs"][:len(R["inputs"]) - len(R["declared"])], R["tokens"], R["moves"], R["net"]
     if not inputs or (int(steps) and R["declared"]):
         raise SystemExit("fit needs probed inputs, and tunes rules without in lines only")

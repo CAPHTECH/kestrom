@@ -1,5 +1,6 @@
 """kestrom (no model): the row ban on a synthetic safetensors folder, the bf16 rounding, the copy detector of the loop guard."""
 import json
+import re
 
 import numpy as np
 import pytest
@@ -96,6 +97,73 @@ def test_rules_move():
     assert abs(out[0, 1] - 7.0) < 0.1 and abs(out[0, 0] + 1.0) < 0.1 and out[0, 2] == 3.0  # とき: 時 + K, 時: とき − K, the rest kept
     with pytest.raises(ValueError):
         rules.compile_rules("h1 s: any(n)\nh2 v: any(s)\nmove 時 -> とき: v\nmove 時 -> 事: v\n")
+
+
+def test_rules_run_a_network_of_its_own(tmp_path, capsys):
+    from kestrom import rules
+    (tmp_path / "r.dsl").write_text('in kyoto: match "(?<!東)京都"\nin no: match "以外"\n'
+                                    "h1 k: all(kyoto, !no)\nh1 hot: 1*temp >= 30\nh1 a1: any(kyoto)\nh1 abc: any(kyoto, no)\n"
+                                    "h2 K: any(k)\nh2 H: any(hot)\nh2 A: any(a1)\nh2 C: any(abc)\nh2 spare: any(hot)\n"
+                                    "out place: 2*K\nout weather: 2*H\nout x: 1*A\nout y: 1*C\n", encoding="utf-8")
+    data = [{"id": 0, "text": "京都の天気", "values": {"temp": 0}, "label": "place"},
+            {"id": 1, "text": "東京都の天気", "values": {"temp": 31}, "label": "weather"},
+            {"id": 2, "text": "京都以外", "values": {"temp": 0}, "label": "place"},  # x and y tie (one coefficient each): no answer
+            {"id": 3, "text": "東京都", "values": {"temp": 29}, "label": None},
+            {"id": 4, "text": "京都", "values": {"temp": 31}, "label": "weather"}]  # place and weather tie
+    (tmp_path / "d.json").write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    rules.run(str(tmp_path / "r.dsl"), str(tmp_path / "d.json"), str(tmp_path / "o.jsonl"))
+    out = [json.loads(r) for r in open(tmp_path / "o.jsonl", encoding="utf-8")]
+    assert [r["class"] for r in out] == ["place", "weather", None, None, None]
+    assert out[0]["scores"] == {"place": 2.0, "weather": 0.0, "x": 1.0, "y": 1.0} and out[0]["fired"] == ["K", "A", "C"]  # spare is not used
+    assert out[3]["fired"] == [] and out[1]["fired"] == ["H"]  # 29 is below 30 - 0.5; 東京都 is not 京都
+    assert "labelled 5 right 3 no answer 2 wrong []" in capsys.readouterr().out
+    first = (tmp_path / "o.jsonl").read_bytes()
+    rules.run(str(tmp_path / "r.dsl"), str(tmp_path / "d.json"), str(tmp_path / "o.jsonl"))
+    assert (tmp_path / "o.jsonl").read_bytes() == first
+    rules.build(str(tmp_path / "r.dsl"), str(tmp_path / "n.npz"))
+    rules.build(str(tmp_path / "r.dsl"), str(tmp_path / "n2.npz"))
+    assert (tmp_path / "n.npz").read_bytes() == (tmp_path / "n2.npz").read_bytes()
+    n = np.load(tmp_path / "n.npz")
+    assert n["inputs"].tolist() == ["temp", "kyoto", "no"] and n["match"].tolist() == ["", "(?<!東)京都", "以外"]
+    assert n["classes"].tolist() == ["place", "weather", "x", "y"]
+    x = np.array([[0, 1, 0]], np.float32)  # the formula of the build help gives run's scores
+    h2 = np.tanh(np.tanh(x @ n["W1"] + n["b1"]) @ n["W2"] + n["b2"])
+    assert (np.where(h2 >= 0, 1.0, -1.0) @ n["W3"] + n["b3"]).tolist() == [[2.0, 0.0, 1.0, 1.0]]
+
+
+def test_rules_run_ties_in_decimals_and_lists_the_wrong(tmp_path, capsys):
+    from kestrom import rules
+    (tmp_path / "r.dsl").write_text("h1 a: any(p)\nh1 c: any(q)\nh2 A: any(a)\nh2 B: any(a)\nh2 C: any(c)\n"
+                                    "out P: 0.1*A + 0.2*B\nout Q: 0.3*C\n")  # in float32, 0.1 + 0.2 is not 0.3
+    data = [{"id": "tie", "values": {"p": 1, "q": 1}, "label": "P"}, {"id": "q", "values": {"p": 0, "q": 1}, "label": "P"},
+            {"id": "none", "values": {"p": 0, "q": 0}, "label": None}, {"id": "n", "values": {"p": 1, "q": 0}, "label": None}]
+    (tmp_path / "d.json").write_text(json.dumps(data))
+    rules.run(str(tmp_path / "r.dsl"), str(tmp_path / "d.json"), str(tmp_path / "o.jsonl"))
+    out = [json.loads(r) for r in open(tmp_path / "o.jsonl")]
+    assert [r["class"] for r in out] == [None, "Q", None, "P"] and out[0]["scores"] == {"P": 0.3, "Q": 0.3}
+    assert out[2]["scores"] == {"P": 0.0, "Q": 0.0}
+    assert "labelled 4 right 1 no answer 1 wrong ['q', 'n']" in capsys.readouterr().out
+    (tmp_path / "r.dsl").write_text("h1 a: any(p)\nh1 c: any(q)\nh2 A: any(a)\nh2 C: any(c)\nout X: -1*A\nout Y: 1*C\n")
+    rules.run(str(tmp_path / "r.dsl"), str(tmp_path / "d.json"), str(tmp_path / "o.jsonl"))
+    out = [json.loads(r) for r in open(tmp_path / "o.jsonl")]
+    assert out[3]["class"] == "Y" and out[3]["scores"] == {"X": -1.0, "Y": 0.0} and out[3]["fired"] == ["A"]  # Y's unit does not fire
+
+
+def test_rules_run_refuses(tmp_path):
+    from kestrom import rules
+    (tmp_path / "d.json").write_text('[{"id": 0, "text": "a", "values": {}}]')
+    for bad in ["h1 s: any(t)\nh2 v: any(s)\nban x: v\n", 'in c: after "a"\nh1 s: any(c)\nh2 v: any(s)\nout A: v\n',
+                "h1 s: any(t)\nh2 v: any(s)\nout A: v\n"]:  # a ban line; an in line of decoding; t has no value
+        (tmp_path / "r.dsl").write_text(bad)
+        with pytest.raises(SystemExit):
+            rules.run(str(tmp_path / "r.dsl"), str(tmp_path / "d.json"), str(tmp_path / "o.jsonl"))
+    with pytest.raises(ValueError):
+        rules.compile_rules("h1 s: any(t)\nh2 v: any(s)\nout A: v\nout A: 2*v\n")  # one out line per token
+    with pytest.raises(re.error):
+        rules.declare('match "("')
+    (tmp_path / "r.dsl").write_text('in c: match "a"\nh1 s: any(c)\nh2 v: any(s)\nout A: v\n')
+    with pytest.raises(SystemExit):
+        rules.load(str(tmp_path / "r.dsl"), None)  # generate does not read match lines
 
 
 def test_copies_finds_exact_and_near_copies(monkeypatch):

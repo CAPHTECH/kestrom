@@ -6,6 +6,9 @@
                                                         probes for rules that read probed features
   rules write-mlp MODEL RULES.dsl DATA.json DST [BALANCE] [K]
                                                         the rules written into the last MLP (tier 2)
+  rules run RULES.dsl DATA.json OUT.jsonl               the rules as a network of their own, with no model, on given
+                                                        texts and values (no tier: nothing is edited)
+  rules build RULES.dsl NET.npz                         that network written out
   steer direction MODEL TARGET.json SOURCE.json FIRE.json QUIET.json OUT.npz
                                                         a direction and a condition (in and add lines)
   rows ban-row MODEL INPUTS.json ROW.npy                the row that bans a token
@@ -31,7 +34,7 @@ import sys
 from kestrom_verify import call
 
 # command: (the module whose docstring is its help, its function or {kind: function}); "module:function" for another module
-COMMANDS = {"generate": ("generate", "main"), "rules": ("rules", {"fit": "fit", "write-mlp": "mlp:write_mlp"}),
+COMMANDS = {"generate": ("generate", "main"), "rules": ("rules", {"fit": "fit", "write-mlp": "mlp:write_mlp", "run": "run", "build": "build"}),
             "steer": ("steer", {"direction": "direction"}), "rows": ("rows", {"ban-row": "row", "ban": "ban", "lsq": "lsq", "ftpo": "ftpo"}),
             "trigger": ("trigger", {k: k for k in ("prompts", "train", "write")}),
             "find": ("find", {k: k for k in ("direction", "lens", "reverse", "writers", "heads")}),

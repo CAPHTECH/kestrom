@@ -81,6 +81,8 @@ kestrom.inspect`).
 - That the range is right. Whether a banned token should be banned, or a condition fires on the right prompts, is outside the check.
   `kestrom rows ban` matches a string inside every token that holds it, also where the string is part of a correct word. A ban row keeps
   a banned logit at most -100 at the positions it was made from; elsewhere it is measured, not bounded.
+- Anything about `kestrom rules run` and `kestrom rules build`: they edit no model and have no tier. They show the rules' answers on
+  the inputs given.
 - Agreement across runtimes. The comparison is between the original and the edited model in the same runtime. llama.cpp and MLX give
   different greedy outputs for the same original weights.
 - Sampling. The guarantees are about teacher-forced logits and greedy decoding.
