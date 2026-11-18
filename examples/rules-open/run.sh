@@ -13,3 +13,9 @@ $K generate "$M" $O/prompts.json $O/open.jsonl --max-tokens $MAX --rules open.ds
 # tier 1: the outputs are the original's until the first token the open line replaced
 $V compare events $O/base.jsonl $O/base2.jsonl $O/open.jsonl "$M" $O/open_compare.json
 python3 open.py score $O/base.jsonl $O/open.jsonl
+# questions that ask for no class, through the same rules: the model opens with no class, and the outputs are left alone
+python3 open.py chat "$M" $O/chat.json
+$V generate mlx "$M" $O/chat.json $O/chat_base.jsonl $MAX
+$V generate mlx "$M" $O/chat.json $O/chat_base2.jsonl $MAX
+$K generate "$M" $O/chat.json $O/chat_open.jsonl --max-tokens $MAX --rules open.dsl
+$V compare events $O/chat_base.jsonl $O/chat_base2.jsonl $O/chat_open.jsonl "$M" $O/chat_compare.json

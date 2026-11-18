@@ -1,7 +1,7 @@
 """Rules written by hand in a small language, run at decoding time (MLX, greedy), or with no model (run, build, weigh). The inputs of the
 rules are features of the hidden state, each read by a linear probe, or conditions on the prompt and on the output so far; units
 combine them; the action lines raise, move or ban token logits, add a direction to a layer's output where a unit fires, go back at a
-listed phrase, stop a loop in the thinking, or open the output with the class that rules run with no model answer for the prompt. Where no unit of an action fires, that action leaves the computation as it was
+listed phrase, stop a loop in the thinking, or open the answer with the class that rules run with no model answer for the prompt. Where no unit of an action fires, that action leaves the computation as it was
 (logits taken back bit for bit, nothing added), so the output is the original's until the first event (kestrom-verify compare
 events; the events are the positions where an action acted).
   kestrom generate MODEL PROMPTS.json OUT.jsonl --rules RULES.dsl|FIT.npz [--max-tokens N]
@@ -77,14 +77,24 @@ a name in an h1 line: declared by an `in` line, or else read by a probe (by run,
   loopguard: [WINDOW]                        at the first copy in the thinking (the last WINDOW tokens, 512 unless given, made of
                                              16-token pieces that all occurred earlier), the decoding goes back to its start and from
                                              there to </think> completes no 16-token piece the output already holds (kestrom.loopguard)
-  open [HEAD]: FILE [CLASS]                  the output opens with a class and a line feed: the class that the rules of FILE (rules of
+  open [HEAD]: FILE [CLASS] ["TEXT"]         the output opens with a class and a line feed: the class that the rules of FILE (rules of
                                              kestrom rules run, a network of their own) answer for the prompt's "data" (an entry of
                                              that command's DATA, kept in OUT), of their head HEAD when they have heads. Until those
                                              characters are complete, the top token is kept where the text with it still fits them (it
                                              may run past their end); where it does not, the top token that fits is taken, an event.
                                              Where the rules answer none nothing is done, or with CLASS the output opens with CLASS.
-                                             OUT records the class as "open" (null: none), also where --max-tokens cut the output
-                                             short of it; the tokenizer must spell it in tokens of whole characters, and where the
+                                             The answer is what comes after the last </think> (nothing is done while thinking), past
+                                             white space. Only where the model is writing a class: where the top token that begins
+                                             the answer (after the bans of other lines) starts none of the head's classes (nor
+                                             CLASS), the answer is left alone (as most answers to a prompt that asks for no class).
+                                             With TEXT (a JSON string), the thinking also opens with TEXT, {} in it the class, and a
+                                             line feed, so that the model thinks with the rules' answer before it: spelled the same
+                                             way wherever thinking begins with another token than </think> and the rules answer (or
+                                             CLASS is given), whatever the model was about to think, so nearly every such output has
+                                             an event at its first thinking position. OUT records as "open" the class the answer
+                                             opens with by this line (null: the rules answered none and there is no CLASS, the answer
+                                             was left alone, the thinking did not end, or --max-tokens cut the answer short of it);
+                                             the tokenizer must spell it, and TEXT, in tokens of whole characters, and where the
                                              other lines ban every token that goes on toward it the run stops. One open line at most
 """
 import ast
@@ -112,7 +122,10 @@ def lines(text):
     """[(kind, the rest of the head, body)] of the lines that are not empty or comments."""
     out = []
     for r in text.splitlines():
-        r = CODE.match(r).group(0).strip()
+        m = CODE.match(r)
+        if r[m.end():][:1] not in ("", "#"):
+            raise ValueError(f"a string that does not close: {r!r}")
+        r = m.group(0).strip()
         if not r:
             continue
         m = HEAD.match(r)
@@ -206,7 +219,7 @@ def declare(body):
 def compile_rules(text, units=UNITS):
     """The rules as a dict: inputs (the probed ones, sorted, then those of the in lines in order), declared {name: spec}, tokens (of
     the out lines), moves [(X, Y, h2 unit)], bans [(tokens, h2 unit)], adds [(FILE, LAYER, [(h2 unit, coefficient)])], phrases, window
-    (of loopguard, None without), open ((HEAD, FILE) or (HEAD, FILE, CLASS), None without), used (the h2 units of the out, move and ban lines), units (the names of the h2 units), sets [(register, expression, h2 unit)] and net {W1,
+    (of loopguard, None without), open ((HEAD, FILE, CLASS or None, TEXT or None), None without), used (the h2 units of the out, move and ban lines), units (the names of the h2 units), sets [(register, expression, h2 unit)] and net {W1,
     b1, W2, b2, W3, b3}: out = Σ coefficient · (h2 + 1)/2 over the h2 units of each out line. Each layer has `units` units (None:
     as many as the larger layer names)."""
     L = lines(text)
@@ -242,9 +255,12 @@ def compile_rules(text, units=UNITS):
     adds = [(rest.split()[0], int(rest.split()[1]), [(unit(u), w) for u, w in terms(body)]) for kind, rest, body in L if kind == "add"]
     phrases = [text_of(body) for kind, _, body in L if kind == "phrase"]
     loops = [body for kind, _, body in L if kind == "loopguard"]
-    opens = [(rest, *body.split()) for kind, rest, body in L if kind == "open"]
-    if len(opens) > 1 or any(len(rest.split()) > 1 or len(o) not in (1, 2) for rest, *o in opens):
-        raise ValueError("one open line at most, `open [HEAD]: FILE [CLASS]`")
+    opens = [(rest, re.fullmatch(r'([^\s"]+)(?:\s+([^\s"]+))?(?:\s+(".*"))?', body)) for kind, rest, body in L if kind == "open"]
+    if len(opens) > 1 or any(len(rest.split()) > 1 or not m for rest, m in opens):
+        raise ValueError('one open line at most, `open [HEAD]: FILE [CLASS] ["TEXT"]`')
+    opens = [(rest, m.group(1), m.group(2), m.group(3) and text_of(m.group(3))) for rest, m in opens]
+    if any(text is not None and not text[:1].strip() for *_, text in opens):
+        raise ValueError("the TEXT of an open line begins with a character that is not white space")
     sets = []
     for kind, rest, body in L:
         if kind == "set":
@@ -506,17 +522,20 @@ def add(h, lines_):
 
 
 def opening(x):
-    """What the open line makes the output of the prompt x open with: (its class, null where it does nothing; that class and a line
-    feed, None where it does nothing or with no open line)."""
+    """What the open line makes the output of the prompt x open with: (that class and a line feed, every class of the head and
+    CLASS, each with a line feed, TEXT with the class for {} and a line feed or None without TEXT), None where the rules answer
+    none and there is no CLASS, or with no open line."""
     if not SIDE.get("open"):
-        return None, None
-    R, head, *null = SIDE["open"]
+        return None
+    R, head, null, text = SIDE["open"]
+    null = [null] if null else []
     if "data" not in x:
         raise SystemExit(f"prompt {x.get('id')}: an open line reads the prompt's \"data\"")
     c = next(answers(R, [x["data"]]))[0]["class"]
     c = c[head] if head else c
     c = null[0] if c is None and null else c
-    return c, None if c is None else c + "\n"
+    starts = [R["tokens"][i][len(head) + 1 if head else 0:] + "\n" for i in R["heads"][head]] + [n + "\n" for n in null]
+    return None if c is None else (c + "\n", starts, text.replace("{}", c) + "\n" if text else None)
 
 
 def model_rules(text):
@@ -539,8 +558,8 @@ def load(path, tok):
     if probed != (0 if P is None else P.shape[1]):
         raise SystemExit(f"the rules read {probed} probed inputs: fit them with kestrom rules fit, and give the fit")
     if R["open"]:
-        head, file, *null = R["open"]
-        R["open"] = (standalone(file), head, *null)
+        head, file, *rest = R["open"]
+        R["open"] = (standalone(file), head, *rest)
         if list(R["open"][0]["heads"]) != [""] if not head else head not in R["open"][0]["heads"]:
             raise SystemExit(f"the open line names a head of {file} (none when none of its classes has a head): {head!r}")
     import mlx.core as mx

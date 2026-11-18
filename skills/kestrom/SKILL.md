@@ -33,7 +33,7 @@ Never state a guarantee no check computed. If U0 fails, G1 and G2 in that report
 | Keep a string (not a token) out, or avoid stock phrases | a `phrase` line in a rules file, `kestrom generate --rules` | `compare events` |
 | Change style only where a condition on the prompt holds | `kestrom steer direction`, then `in ... prompt` and `add` lines | `compare events` |
 | Stop thinking loops | a `loopguard` line | `compare events` (`examples/loop-guard`) |
-| Make a model's answer open with the class that hand-written rules answer (rules of `kestrom rules run`, connected to a model) | an `open [HEAD]: FILE [CLASS]` line; each prompt carries `data`, what the rules read | `compare events` (`examples/rules-open`); it does not check that the class or the text after it is right |
+| Make a model's answer open with the class that hand-written rules answer (rules of `kestrom rules run`, connected to a model) | an `open [HEAD]: FILE [CLASS] ["TEXT"]` line; each prompt carries `data`, what the rules read | `compare events` (`examples/rules-open`); it does not check that the class or the text after it is right |
 | Rules over probed features of the hidden state | `kestrom rules fit`, then `kestrom generate --rules FIT.npz` | `compare events` |
 | Try rules, or a small classifier or state machine written by hand, with no model | `kestrom rules run` (`kestrom rules build` writes the network out; `kestrom rules weigh` fits the out coefficients to labels) | the labels in DATA (no tier) |
 | Set output rows toward target answers | `kestrom rows lsq` | as a row edit |
@@ -122,9 +122,26 @@ It edits no model: claim no tier, only how many held-out answers agree with thei
    default class, a question the rules cannot read (a typo, a new wording) is opened with it even when the model would have
    answered: measure both forms on held-out questions before choosing.
 4. Generate the unchanged model twice (`kestrom-verify generate mlx`) and run `compare events`. Outputs with no event are the
-   original's: there the model and the rules agreed. Count line 1 right before and after, and how many went from right to wrong.
+   original's: the model and the rules agreed there, or the line left the output alone (`open` is null). Count line 1 right before and after, and how many went from right to wrong.
 
-What to claim: tier 1 for the output before the first event, and the counts you measured. OUT records the class as `open`; no
+The answer is what follows the last `</think>`; nothing is done while the model thinks. The line acts only where the model begins
+the answer with a class: where the top token that begins it starts none of the head's classes (nor CLASS) the output is left alone,
+so prompts that ask for no class can go through the same rules file (measure it: an answer that begins with the first characters of a
+class is opened whatever was asked). It then also leaves a routing answer that opens with other text (an apology, a sentence), and a
+class written later in the answer. `open` is null there, as it is where the rules answer none and the line gives no class, and
+where the thinking did not end or the output was cut short: run `kestrom rules run` on the same `data` and count the outputs that
+stopped (`finish`) with `open` null where the rules answer.
+
+For a model that thinks, the answer-only line waits for the thinking to end and can do nothing where it does not. Add a text as
+the last word, `open HEAD: FILE.dsl CLASS "The rules have decided line 1: {}. ..."`: the thinking then opens with that text, `{}` the
+class, and a line feed. It is written wherever thinking begins (with another token than `</think>`) and the rules answer or the
+line gives a class, also for prompts that ask for no class, so use it only where every prompt is a routing one. Measure, against the unchanged model at the same token limit: how many outputs close
+the thinking, line 1 right, and right to wrong. In one measurement (Qwen3.5-4B, 24 questions, at most 2,048 tokens, one wording of
+the text) line 1 was right on 4 unchanged (19 outputs never closed the thinking at that limit) and on 11 with the text; one that was
+right no longer closed the thinking, 13 never closed it, and a loop guard added none.
+With the text nearly every output has events from its first thinking position, so `compare events` says almost nothing about it.
+
+What to claim: tier 1 for the output before the first event, and the counts you measured. OUT records as `open` the class the answer opens with by the line; no
 check computes that the class is right or that the text after it is true or agrees with it, so read a sample of the reasons where
 events occurred. A class must be spelled in tokens of whole characters, and where other lines ban every token toward it the run stops.
 

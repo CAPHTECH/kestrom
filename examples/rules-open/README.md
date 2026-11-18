@@ -29,5 +29,19 @@ What this run shows is the mechanism on eight questions the rules were written f
 right on all eight by construction. The check covers the output before the first event. That the opening is the rules' class can be
 recomputed from `out/open.jsonl` (`open`, `data`, `text`); nothing checks that the reason on line 2 is true.
 
+The line acts only where the model is writing a class. `run.sh` then sends four questions that ask for no class, with no system
+prompt, through the same rules: the weather, a line of Python, "照明デザイナーという仕事について一文で教えて" and
+"エアコンという言葉の語源を一文で教えて". The rules answer `light` and `ac` for the last two (they read the words), and `ask` is
+the default for the first two, but the model opens with a sentence, not with a class, so every output is left alone:
+
+```
+the same output 4 | otherwise [] | {'events in the edited outputs': 0}
+U0 greedy, the original twice the same: 4 of 4 PASS
+G2 greedy, the same output or the first difference in the range: 4 of 4 PASS
+```
+
+What this costs: a routing answer that opens with other text than a class (an apology, a sentence) is left alone too. None of the
+eight did.
+
 Without the last word (`open meter: ../rules-run/router.dsl`), nothing is done where the rules answer none. Choose by what a wrong
 default costs: with a default class, a question the rules cannot read is opened with it even when the model would have answered.

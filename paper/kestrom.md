@@ -96,8 +96,8 @@ combined with the others. Its inputs are features of the hidden state read by li
 above), a given text having appeared in the output, whether the model is thinking, and the output position (for fields written at
 fixed positions); units combine them with AND, OR and NOT; its
 actions raise, move or ban token logits, add a direction to a layer's output, back out of a listed phrase (the Antislop sampler
-[5]), stop a loop in the thinking (above), and open the output with the class that rules run with no model answer for the prompt
-(an `open` line; an event where it replaces the top token). Where no unit of an action fires, the action leaves the computation as it was, so the
+[5]), stop a loop in the thinking (above), and open the answer with the class that rules run with no model answer for the prompt,
+where the model begins the answer with a class, and the thinking with a text that holds that class (an `open` line; an event where it replaces the top token). Where no unit of an action fires, the action leaves the computation as it was, so the
 same events and the same check (G2) cover every combination. `kestrom rows lsq` and
 `rows ftpo` rewrite output-layer rows toward target answers and are checked as row edits. In tier 2, `kestrom trigger` learns
 spare embedding rows (that an input without them is computed as before follows for an untied embedding, and is measured, not
