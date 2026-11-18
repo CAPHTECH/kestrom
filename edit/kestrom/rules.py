@@ -17,7 +17,7 @@ events; the events are the positions where an action acted).
       rules of h1, h2 and out lines only (one layer of units) written into the last MLP instead (tier 2; python -m pydoc kestrom.mlp).
   kestrom rules run RULES.dsl DATA.json OUT.jsonl
       the rules as a network of their own, with no model (no tier: nothing is edited), for a trial of rules or a small classifier
-      or state machine written by hand. Rules of in lines of match, count, number and prev, h1, h2, out and set lines only, with as many
+      or state machine written by hand. Rules of in lines of match, count, number and prev, h1, h2, out and set lines only (an out line at least), with as many
       units as they name (with a model, 32 a layer); the out lines name classes, not tokens. DATA: a JSON list of {"id", "text" (read by the
       match, count and number lines), "values": {name: number} (every input that no in line declares), "label" (optional; null: no
       answer is right; with heads, {head: class}), "targets": {register: number} (optional)}, or with "steps": [{"text", "values"}, ...] in place of text and values (or "steps": N beside them: the
@@ -41,7 +41,8 @@ events; the events are the positions where an action acted).
   kestrom rules weigh RULES.dsl DATA.json OUT.dsl [RIDGE]
       the rules with their out lines rewritten: the coefficients of every class over all the h2 units, by least squares (ridge
       RIDGE, 0.001 unless given) toward 1 on the entries labelled with the class and 0 on the others, from which units fire at each
-      labelled entry's last step. The other lines are kept as written, the new out lines after them; the coefficients are rounded to 4 decimals.
+      labelled entry's last step. The other lines are kept as written, the new out lines after them; the coefficients are rounded to 4 decimals. It prints the
+      numbers of labelled entries, units and classes.
 The language: one line each, `HEAD: BODY` (the first : outside double quotes); `#` outside double quotes starts a comment; TEXT is
 a JSON string ("..."); a TOKEN is a word or a JSON string ("##", " the"); paths as given (from the working directory). An input is
 a name in an h1 line: declared by an `in` line, or else read by a probe (by run, build and weigh: a value given in DATA, or a register).
