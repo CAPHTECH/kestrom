@@ -34,6 +34,7 @@ Never state a guarantee no check computed. If U0 fails, G1 and G2 in that report
 | Change style only where a condition on the prompt holds | `kestrom steer direction`, then `in ... prompt` and `add` lines | `compare events` |
 | Stop thinking loops | a `loopguard` line | `compare events` (`examples/loop-guard`) |
 | Rules over probed features of the hidden state | `kestrom rules fit`, then `kestrom generate --rules FIT.npz` | `compare events` |
+| Try rules, or a small classifier or state machine written by hand, with no model | `kestrom rules run` (`kestrom rules build` writes the network out; `kestrom rules weigh` fits the out coefficients to labels) | the labels in DATA (no tier) |
 | Set output rows toward target answers | `kestrom rows lsq` | as a row edit |
 | Lower the tokens that start listed phrases, in the output rows | `kestrom rows ftpo` (from the phrase events of `kestrom generate`) | as a row edit |
 | Find where to edit (reads only) | `kestrom find direction / lens / reverse / writers / heads` | — |
@@ -88,6 +89,25 @@ edited.jsonl]`: positions whose logits are the same bytes, whose top token chang
 
 `kestrom-verify summary REPORT.json` prints a report as markdown.
 
+## Writing a network by hand with `kestrom rules run`
+
+`examples/rules-run` has a router with two heads and Euclid's algorithm with registers.
+It edits no model: claim no tier, only how many held-out answers agree with their labels.
+
+1. Make the check first. Split the labelled entries into dev (shown to the writer) and held-out (never shown). If the inputs are
+   finite (`match` lines only), list every combination as DATA: the answers then cover them all. For rules with a state (`prev`
+   lines, entries of steps), list every sequence up to a length. A `set` line keeps a number in a register (`+ - * / // %`);
+   `"steps": N` runs an entry N times, and the registers after the last step are in OUT: give `"targets": {register: number}` to
+   score them. Classes named `HEAD/CLASS` are answered per head, with labels `{head: class}`.
+2. Write the rules. A unit that fires counts as 1; with no unit firing or a tied top score the answer is null, counted apart from
+   wrong answers; the top score wins also where none of its own units fires (a negative coefficient elsewhere). Give values in
+   whole numbers (a gate holds from its threshold minus 0.5). A regex is a JSON string (`"\\d+"`) and searches the text as given;
+   `count` gives its matches and `number` the number in its group: gate these, like values, with `1*x >= T`, not `all` or `any`.
+3. Run on dev, read the ids answered wrong and the `fired` units, name the cause, change only what it needs, and keep every
+   version with its dev score.
+4. Pick the best version on dev, not the last, and report its held-out score once. `kestrom rules weigh` on dev only: it fits
+   the out lines to the labels it is given, so its score on those entries is not a held-out score.
+
 ## Rules that keep reports valid
 
 - Run the original twice, as two runs. The same output file given twice is not a second run, and `compare` does not tie a file to
@@ -103,5 +123,5 @@ edited.jsonl]`: positions whose logits are the same bytes, whose top token chang
   quantization types other than Q4_K_M, models whose output layer is tied to the embedding in GGUF (tested in MLX, with
   Qwen3.5-0.8B), edits of input rows. Say so when a task leaves the tested ground.
 
-Details: `docs/guarantees.md` (every check and command), `docs/report-format.md` (report keys), `examples/` (three runs from start
+Details: `docs/guarantees.md` (every check and command), `docs/report-format.md` (report keys), `examples/` (four runs from start
 to end).
