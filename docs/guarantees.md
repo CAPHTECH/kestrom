@@ -84,8 +84,16 @@ kestrom.inspect`).
   `kestrom rows ban` matches a string inside every token that holds it, also where the string is part of a correct word. A ban row keeps
   a banned logit at most -100 at the positions it was made from; elsewhere it is measured, not bounded.
 - That the class an `open` line opens the output with is right, or that the text after it agrees with it: G2 covers the output
-  before the first event only. OUT records the class (`open`) and what the rules read (`data`), so the opening can be recomputed
-  with `kestrom rules run`; no check of kestrom-verify does so.
+  before the first event only. OUT records the class the answer opens with by that line (`open`) and what the rules read (`data`),
+  so the opening can be recomputed with `kestrom rules run`; no check of kestrom-verify does so. Where the top token that
+  begins the answer (what follows the last `</think>`) starts no class, the line leaves the answer alone: a class written later in the
+  answer is not corrected. `open` is null there, as it is where the rules answered none and the line gives no class, and where the
+  thinking did not end or the output was cut short of the class; which of these happened is read from `finish`, the text and the
+  rules run on `data`. An answer to another kind of prompt that begins with the first characters of a class is opened too.
+  With a text in the line the thinking opens with it wherever thinking begins with another token than `</think>` and the rules answer
+  or the line gives a class (whatever the prompt asks): the
+  events then begin at the first thinking positions, so G2 covers almost nothing of such an output, and nothing checks that the model
+  uses the text or that its thinking ends.
 - Anything about `kestrom rules run`, `kestrom rules build` and `kestrom rules weigh`: they edit no model and have no tier. They show the rules' answers on
   the inputs given.
 - Agreement across runtimes. The comparison is between the original and the edited model in the same runtime. llama.cpp and MLX give

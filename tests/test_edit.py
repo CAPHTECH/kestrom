@@ -528,7 +528,7 @@ def test_open_line_spells_the_class_the_rules_answer(tmp_path):
     from kestrom import generate, rules
 
     class Tok:  # token i is PIECES[i]; 5 is half a character
-        PIECES = ["a", "b", "ab", "\n", "b\nx", "\ufffd", "c", "", "b\n\ufffd", "a\ufffd"]
+        PIECES = ["a", "b", "ab", "\n", "b\nx", "\ufffd", "c", "", "b\n\ufffd", "a\ufffd", "<think>", "</think>", "\n\n", "ab\nz", " ab"]
 
         def decode(self, t):
             return "".join(self.PIECES[i] for i in t)
@@ -542,22 +542,46 @@ def test_open_line_spells_the_class_the_rules_answer(tmp_path):
     assert generate.spell(Tok(), [], "ab\n", 7, order) == (0, True)  # nor a token of no text
     with pytest.raises(SystemExit):
         generate.spell(Tok(), [], "z\n", 6, order)
+    assert generate.answer(Tok(), [12, 0, 12, 11, 12, 3, 2, 12], (10, 11)) == (False, [2, 12])  # after </think>, past the white space
+    assert generate.answer(Tok(), [0, 10, 1], (10, 11)) == (True, [1]) and generate.answer(Tok(), [12, 1], (10, 11), True) == (True, [1])
+    assert generate.answer(Tok(), [11, 1], (10, 11), True) == (False, [1]) and generate.answer(Tok(), [0], (None, None), False, [1]) == (False, [1, 0])
     mx = pytest.importorskip("mlx.core")
-    row = lambda *top: mx.array([[float(len(top) - top.index(i)) if i in top else 0.0 for i in range(10)]])  # noqa: E731
-    spelled = []
-    ban, open_ = generate.processors([], [0], False, None, Tok(), "ab\n", spelled)  # with a ban at the first step, as after a phrase
-    z = open_(mx.array([9, 9]), ban(mx.array([9, 9]), row(6, 0, 2)))  # c on top, a banned: ab is taken, an event at 0
-    assert int(mx.argmax(z[0])) == 2 and spelled == [0]
-    z = open_(mx.array([9, 9, 2]), ban(mx.array([9, 9, 2]), row(3, 1)))  # the line feed is the top token: kept, no event
-    assert int(mx.argmax(z[0])) == 3 and spelled == [0]
-    assert open_(mx.array([9, 9, 2, 3]), row(6)).tolist() == row(6).tolist() and spelled == [0]  # past the opening: as it was
-    ban, open_ = generate.processors([0], [1, 2, 4, 8], False, None, Tok(), "ab\n", [])  # a restart at 1, every way on banned
+    row = lambda *top: mx.array([[float(len(top) - top.index(i)) if i in top else 0.0 for i in range(15)]])  # noqa: E731
+    P, AB = [9, 9], ("ab\n", ["ab\n", "c\n"], None)
+
+    def steps(toks, tops, ban=(), think=(None, None), thinking=False, note=None, loop=False):  # the tokens taken at the steps after toks, and the events
+        procs, out, spelled = generate.processors(list(toks), list(ban), loop, think[1], Tok(), (*AB[:2], note), spelled := [], think, thinking), [], spelled
+        for top in tops:
+            z = row(*top)
+            for f in procs:
+                z = f(mx.array(P + list(toks) + out), z)
+            out.append(int(mx.argmax(z[0])))
+        return out, spelled
+    assert steps([], [(6, 0, 2), (3, 1), (6,)], ban=[0]) == ([2, 3, 6], [0])  # c on top, a banned: ab, an event at 0; the line feed kept; then as it was
+    assert steps([], [(0,), (6, 1), (6, 3), (6,)]) == ([0, 1, 3, 6], [1, 2])  # a kept, then c replaced twice: no standing down inside the opening
+    assert steps([], [(13,), (6,)]) == ([13, 6], [])  # the whole opening and more in one token: kept
+    assert steps([], [(7,), (12,), (6, 2), (6, 3)]) == ([7, 12, 2, 3], [2, 3])  # a token of no text, white space: passed; then the answer begins
+    assert steps([], [(1,), (0,), (6,)]) == ([1, 0, 6], [])  # b starts no class: left alone, also when a comes next
+    assert steps([], [(5,), (2,)]) == ([5, 2], []) and steps([1], [(0,), (6,)]) == ([0, 6], [])  # half a character; a restart after b
+    assert steps([2, 3], [(6,), (0,)]) == ([6, 0], [])  # a restart past the opening
     with pytest.raises(SystemExit):
-        open_(mx.array([9, 9, 0]), ban(mx.array([9, 9, 0]), row(6)))
-    assert generate.processors([2, 3], [], False, None, Tok(), "ab\n", []) == []  # a restart past the opening: no processor
+        steps([0], [(6,)], ban=[1, 2, 4, 8, 13])  # a restart inside it with every way on banned
+    T = (10, 11)
+    assert steps([], [(0,), (6,), (11,), (12,), (6, 2), (3,), (6,)], think=T, thinking=True) == ([0, 6, 11, 12, 2, 3, 6], [4])  # nothing while thinking
+    assert steps([], [(10,), (2,), (11,), (1,), (0,)], think=T) == ([10, 2, 11, 1, 0], [])  # the model opens thinking; b after it: left alone
+    assert steps([0, 6, 11], [(6, 0), (6, 1)], think=T, thinking=True) == ([0, 1], [3, 4])  # a restart at the answer's first token
+    N = dict(think=T, note="b\n")  # the thinking opens with b and a line feed, whatever the model was about to think
+    assert steps([], [(5,), (6,), (0,), (11,), (6, 2), (3,)], thinking=True, **N) == ([1, 3, 0, 11, 2, 3], [0, 1, 4])  # a top that starts no class too
+    assert steps([], [(14,), (6,)]) == ([0, 1], [0, 1])  # a class after a space: the model is writing a class, and it is spelled
+    assert steps([], [(10,), (12,), (4,), (11,), (1,)], **N) == ([10, 12, 4, 11, 1], [])  # the model opens thinking and writes it itself
+    assert steps([], [(11,), (6, 0), (6, 1), (3,)], thinking=True, **N) == ([11, 0, 1, 3], [1, 2])  # thinking closed at once: not reopened
+    assert steps([], [(2,), (3,)], **N) == ([2, 3], [])  # no thinking: the note is not written
+    assert steps([], [(6,), (6,), (11,), (6, 2), (3,)], thinking=True, loop=True, ban=[9], **N) == ([1, 3, 11, 2, 3], [0, 1, 3])  # with the other two processors
     (tmp_path / "r.dsl").write_text('in hot: match "hot"\nh1 a: all(hot)\nh2 u: all(a)\nout k/yes: u\nout k/no: -1*u\n')
-    assert rules.compile_rules(f"open k: {tmp_path / 'r.dsl'} ask")["open"] == ("k", str(tmp_path / "r.dsl"), "ask")
-    for bad in ("open: a b c", "open a b: f", "open: f\nopen: g"):
+    assert rules.compile_rules(f"open k: {tmp_path / 'r.dsl'} ask")["open"] == ("k", str(tmp_path / "r.dsl"), "ask", None)
+    assert rules.compile_rules(f'open: {tmp_path / "r.dsl"} "The rules say {{}}."')["open"] == ("", str(tmp_path / "r.dsl"), None, "The rules say {}.")
+    assert rules.compile_rules('open: f "T{}"')["open"] == ("", "f", None, "T{}")
+    for bad in ("open: a b c", "open a b: f", "open: f\nopen: g", 'open: "T {}"', 'open: f ask"T"', 'open: f ask ""', 'open: f ask " {}"', 'open: f ask "T {}'):
         with pytest.raises(ValueError):
             rules.compile_rules(bad)
     (tmp_path / "o.dsl").write_text(f"open k: {tmp_path / 'r.dsl'}\n")
@@ -570,12 +594,12 @@ def test_open_line_spells_the_class_the_rules_answer(tmp_path):
             rules.load(str(tmp_path / "o.dsl"), None)
     try:
         rules.SIDE.clear()
-        assert rules.opening({"data": {"text": "hot"}}) == (None, None)  # no open line
-        rules.SIDE["open"] = (R, "k")
+        assert rules.opening({"data": {"text": "hot"}}) is None  # no open line
+        rules.SIDE["open"] = (R, "k", None, None)
         with pytest.raises(SystemExit):
             rules.opening({"id": 1})  # no data
-        assert rules.opening({"data": {"text": "hot"}}) == ("yes", "yes\n") and rules.opening({"data": {"text": "cold"}}) == (None, None)
-        rules.SIDE["open"] = (R, "k", "ask")
-        assert rules.opening({"data": {"text": "cold"}}) == ("ask", "ask\n")
+        assert rules.opening({"data": {"text": "hot"}}) == ("yes\n", ["yes\n", "no\n"], None) and rules.opening({"data": {"text": "cold"}}) is None
+        rules.SIDE["open"] = (R, "k", "ask", "Rules: {}.")
+        assert rules.opening({"data": {"text": "cold"}}) == ("ask\n", ["yes\n", "no\n", "ask\n"], "Rules: ask.\n")
     finally:
         rules.SIDE.clear()
