@@ -39,6 +39,9 @@ What is not in it:
   or paid. A license that covers your customers is set by a written agreement.
 - A warranty. The software comes as is (the No Liability section of the license).
 
+The commercial license is governed by the laws of Japan, and the Tokyo District Court has exclusive jurisdiction in the first
+instance over any dispute about it.
+
 Before you buy: `kestrom` is tested only on Apple Silicon, not on Linux or CUDA (README, "What Kestrom does not guarantee"). Use
 the free trial to check it on your application: payments are not refunded.
 
