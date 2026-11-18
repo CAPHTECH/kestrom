@@ -522,3 +522,60 @@ def test_capture_puts_back_the_hooks_it_replaced():
     assert [o.tolist() for o in out] == [[[2, 3]], [[3, 4]]]  # read without the hook, as before the edit
     assert m.model(mx.array([[1, 2]])).tolist() == [[30, 40]]  # the hook of layer 1 is still there
     steer.install(m.layers[1], None)
+
+
+def test_open_line_spells_the_class_the_rules_answer(tmp_path):
+    from kestrom import generate, rules
+
+    class Tok:  # token i is PIECES[i]; 5 is half a character
+        PIECES = ["a", "b", "ab", "\n", "b\nx", "\ufffd", "c", "", "b\n\ufffd", "a\ufffd"]
+
+        def decode(self, t):
+            return "".join(self.PIECES[i] for i in t)
+    order = lambda: [6, 5, 0, 2, 1, 4, 3]  # noqa: E731
+    assert generate.spell(Tok(), [], "ab\n", 2, order) == (2, False)  # the top token fits: kept
+    assert generate.spell(Tok(), [0], "ab\n", 4, order) == (4, False)  # it may run past the end
+    assert generate.spell(Tok(), [], "ab\n", 6, order) == (0, True)  # c does not fit, nor half a character: the first that does
+    assert generate.spell(Tok(), [0], "ab\n", 0, order) == (1, True)
+    assert generate.spell(Tok(), [0], "ab\n", 8, order) == (8, False)  # half a character past the end fits
+    assert generate.spell(Tok(), [], "ab\n", 9, order) == (0, True)  # half a character inside it does not
+    assert generate.spell(Tok(), [], "ab\n", 7, order) == (0, True)  # nor a token of no text
+    with pytest.raises(SystemExit):
+        generate.spell(Tok(), [], "z\n", 6, order)
+    mx = pytest.importorskip("mlx.core")
+    row = lambda *top: mx.array([[float(len(top) - top.index(i)) if i in top else 0.0 for i in range(10)]])  # noqa: E731
+    spelled = []
+    ban, open_ = generate.processors([], [0], False, None, Tok(), "ab\n", spelled)  # with a ban at the first step, as after a phrase
+    z = open_(mx.array([9, 9]), ban(mx.array([9, 9]), row(6, 0, 2)))  # c on top, a banned: ab is taken, an event at 0
+    assert int(mx.argmax(z[0])) == 2 and spelled == [0]
+    z = open_(mx.array([9, 9, 2]), ban(mx.array([9, 9, 2]), row(3, 1)))  # the line feed is the top token: kept, no event
+    assert int(mx.argmax(z[0])) == 3 and spelled == [0]
+    assert open_(mx.array([9, 9, 2, 3]), row(6)).tolist() == row(6).tolist() and spelled == [0]  # past the opening: as it was
+    ban, open_ = generate.processors([0], [1, 2, 4, 8], False, None, Tok(), "ab\n", [])  # a restart at 1, every way on banned
+    with pytest.raises(SystemExit):
+        open_(mx.array([9, 9, 0]), ban(mx.array([9, 9, 0]), row(6)))
+    assert generate.processors([2, 3], [], False, None, Tok(), "ab\n", []) == []  # a restart past the opening: no processor
+    (tmp_path / "r.dsl").write_text('in hot: match "hot"\nh1 a: all(hot)\nh2 u: all(a)\nout k/yes: u\nout k/no: -1*u\n')
+    assert rules.compile_rules(f"open k: {tmp_path / 'r.dsl'} ask")["open"] == ("k", str(tmp_path / "r.dsl"), "ask")
+    for bad in ("open: a b c", "open a b: f", "open: f\nopen: g"):
+        with pytest.raises(ValueError):
+            rules.compile_rules(bad)
+    (tmp_path / "o.dsl").write_text(f"open k: {tmp_path / 'r.dsl'}\n")
+    with pytest.raises(SystemExit):  # an open line is for a model
+        rules.standalone(tmp_path / "o.dsl")
+    R = rules.standalone(tmp_path / "r.dsl")
+    for line in ("open: ", "open z: "):  # the rules have the head k
+        (tmp_path / "o.dsl").write_text(line + str(tmp_path / "r.dsl") + "\n")
+        with pytest.raises(SystemExit):
+            rules.load(str(tmp_path / "o.dsl"), None)
+    try:
+        rules.SIDE.clear()
+        assert rules.opening({"data": {"text": "hot"}}) == (None, None)  # no open line
+        rules.SIDE["open"] = (R, "k")
+        with pytest.raises(SystemExit):
+            rules.opening({"id": 1})  # no data
+        assert rules.opening({"data": {"text": "hot"}}) == ("yes", "yes\n") and rules.opening({"data": {"text": "cold"}}) == (None, None)
+        rules.SIDE["open"] = (R, "k", "ask")
+        assert rules.opening({"data": {"text": "cold"}}) == ("ask", "ask\n")
+    finally:
+        rules.SIDE.clear()

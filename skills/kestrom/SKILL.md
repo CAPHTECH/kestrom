@@ -33,6 +33,7 @@ Never state a guarantee no check computed. If U0 fails, G1 and G2 in that report
 | Keep a string (not a token) out, or avoid stock phrases | a `phrase` line in a rules file, `kestrom generate --rules` | `compare events` |
 | Change style only where a condition on the prompt holds | `kestrom steer direction`, then `in ... prompt` and `add` lines | `compare events` |
 | Stop thinking loops | a `loopguard` line | `compare events` (`examples/loop-guard`) |
+| Make a model's answer open with the class that hand-written rules answer (rules of `kestrom rules run`, connected to a model) | an `open [HEAD]: FILE [CLASS]` line; each prompt carries `data`, what the rules read | `compare events` (`examples/rules-open`); it does not check that the class or the text after it is right |
 | Rules over probed features of the hidden state | `kestrom rules fit`, then `kestrom generate --rules FIT.npz` | `compare events` |
 | Try rules, or a small classifier or state machine written by hand, with no model | `kestrom rules run` (`kestrom rules build` writes the network out; `kestrom rules weigh` fits the out coefficients to labels) | the labels in DATA (no tier) |
 | Set output rows toward target answers | `kestrom rows lsq` | as a row edit |
@@ -123,5 +124,5 @@ It edits no model: claim no tier, only how many held-out answers agree with thei
   quantization types other than Q4_K_M, models whose output layer is tied to the embedding in GGUF (tested in MLX, with
   Qwen3.5-0.8B), edits of input rows. Say so when a task leaves the tested ground.
 
-Details: `docs/guarantees.md` (every check and command), `docs/report-format.md` (report keys), `examples/` (four runs from start
+Details: `docs/guarantees.md` (every check and command), `docs/report-format.md` (report keys), `examples/` (five runs from start
 to end).

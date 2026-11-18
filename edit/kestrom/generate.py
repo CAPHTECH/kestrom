@@ -1,16 +1,18 @@
 """Greedy decoding (MLX) with the inference-time edits of a rules file (python -m pydoc kestrom.rules): logits edited where a rule
 fires, directions added to layers where a condition on the prompt or the output holds, listed phrases backed out of, a loop in the
-thinking stopped. Every output records its events, the positions where an edit acted; before the first one the decoding is the
+thinking stopped, the output opened with the class that rules of their own answer for the prompt. Every output records its events, the positions where an edit acted; before the first one the decoding is the
 original's, so check it with kestrom-verify compare events against two runs of the unchanged model (kestrom-verify generate mlx).
   kestrom generate MODEL PROMPTS.json OUT.jsonl [--rules RULES.dsl|FIT.npz] [--max-tokens N]
   --rules       the rules: a .dsl file, or a fit of kestrom rules fit when they read probed features
   --max-tokens  the longest output (512 unless given)
-PROMPTS: a JSON list of {"ids": prompt ids, other keys kept}. OUT: per prompt, the keys of the prompt, finish (stop or length),
+PROMPTS: a JSON list of {"ids": prompt ids, "data" (with an open line: what its rules read), other keys kept}. OUT: per prompt, the keys of the prompt, finish (stop or length),
 the tokens without the stop token, text, events (sorted positions) and detail (each backtrack: kind, phrase or loop, position,
 kept: whether the final output kept the tokens before it; a phrase also string and banned, the token banned, null with gave_up
-when it gave up)."""
+when it gave up), and with an open line open (the class the output opens with, null where it did nothing)."""
 import argparse
 import json
+
+import numpy as np
 
 from kestrom_verify import report
 
@@ -27,9 +29,27 @@ def start_token(tok, toks, char):
     return j
 
 
-def processors(toks, ban, copy_found, think_end):
+def spell(tok, out, opening, top, order):
+    """The token after the output tokens `out` while the text is short of `opening`: the top token where the text with it still
+    fits (in whole characters, as far as opening goes, and longer than before), else the first of order() that does, and whether it
+    is another than top. It stops where none does (also where the other edits ban every token that would)."""
+    n = len(tok.decode(out))
+
+    def fits(t):
+        s = tok.decode(out + [t])
+        return len(s) > n and "\ufffd" not in s[:len(opening)] and (opening.startswith(s) or s.startswith(opening))
+    if fits(top):
+        return top, False
+    t = next((int(t) for t in order() if fits(int(t))), None)
+    if t is None:
+        raise SystemExit(f"no token goes on from {tok.decode(out)!r} toward {opening!r} in whole characters")
+    return t, True
+
+
+def processors(toks, ban, copy_found, think_end, tok=None, opening=None, spelled=None):
     """The logits processors of one restart at position len(toks): ban (phrases) at its first step only; after a loop was found,
-    no 16-token piece the output already holds until </think>."""
+    no 16-token piece the output already holds until </think>; with an opening (an open line), its characters while the output is
+    short of them, the positions where another token than the top one was taken added to spelled."""
     import mlx.core as mx
     out = []
     if ban:
@@ -58,6 +78,23 @@ def processors(toks, ban, copy_found, think_end):
                 logits[:, mx.array(sorted(b))] = float("-inf")
             return logits
         out.append(forbid)
+    if opening and len(tok.decode(toks)) < len(opening):
+        seen, opened = list(toks), []
+
+        def open_(tokens, logits):  # after the others: the top token is the one the other edits leave, and a token they ban is not taken
+            if opened:
+                seen.append(int(tokens[-1]))
+            opened.append(1)
+            if len(tok.decode(seen)) >= len(opening):
+                return logits
+            z = np.array(logits[0].astype(mx.float32))
+            t, other = spell(tok, seen, opening, int(mx.argmax(logits[0])), lambda: (t for t in np.argsort(-z, kind="stable") if z[t] > -np.inf))
+            if other:
+                spelled.append(len(seen))
+                logits = mx.full(logits.shape, float("-inf"), dtype=logits.dtype)
+                logits[:, t] = 0.0
+            return logits
+        out.append(open_)
     return out
 
 
@@ -69,8 +106,8 @@ def acted(record, p, end, prefill=False):
     return {p + j for j, f in enumerate(steps) if f and p + j < end} | ({p} if prefill and p < end and any(bool(f) for n, f in record if n > 1) else set())
 
 
-def decode(model, tok, ids, max_tokens, phrases=(), window=None, think_end=None):
-    """Greedy with the rules of rules.SIDE on the model and the watching edits given here (phrases, loopguard). Returns the tokens,
+def decode(model, tok, ids, max_tokens, phrases=(), window=None, think_end=None, opening=None):
+    """Greedy with the rules of rules.SIDE on the model and the watching edits given here (phrases, loopguard, opening). Returns the tokens,
     the finish, the positions where an edit acted in the final output, and the backtracks."""
     import mlx.core as mx
     from mlx_lm.generate import generate_step
@@ -80,7 +117,8 @@ def decode(model, tok, ids, max_tokens, phrases=(), window=None, think_end=None)
     while True:
         p = len(toks)
         rules.restart(len(ids))
-        procs = processors(toks, sorted(bans.get(p, ())), copy_found, think_end)
+        spelled = []
+        procs = processors(toks, sorted(bans.get(p, ())), copy_found, think_end, tok, opening, spelled)
         step = generate_step(mx.array(ids + toks), model, max_tokens=max_tokens - p, logits_processors=procs or None)
         done = len(tok.decode(toks)) if phrases else 0  # an occurrence counts once its end is past the text checked so far
         back, finish = None, "length"
@@ -113,7 +151,7 @@ def decode(model, tok, ids, max_tokens, phrases=(), window=None, think_end=None)
             if back is not None:
                 break
         end = back if back is not None else len(toks) + (finish == "stop")
-        fired = {j for j in fired if j < end} | acted(rules.SIDE["record"], p, end) | acted(rules.SIDE["record_add"], p, end, True)
+        fired = {j for j in fired if j < end} | acted(rules.SIDE["record"], p, end) | acted(rules.SIDE["record_add"], p, end, True) | {j for j in spelled if j < end}
         if back is None:
             return toks, finish, fired, detail
         del toks[back:]
@@ -133,11 +171,12 @@ def run(model_dir, prompts_file, out, max_tokens=report.MAX_TOKENS, rules_file=N
         for x in report.read(prompts_file):
             if rules_file:
                 rules.start(model, x["ids"])
-            toks, finish, fired, detail = decode(model, tok, x["ids"], int(max_tokens), rules.SIDE.get("phrases", ()), rules.SIDE.get("window"), think_end)
+            c, opening = rules.opening(x)
+            toks, finish, fired, detail = decode(model, tok, x["ids"], int(max_tokens), rules.SIDE.get("phrases", ()), rules.SIDE.get("window"), think_end, opening)
             for e in detail:
                 e["kept"] = toks[:e["position"]] == e.pop("prefix")
             events = sorted(fired | {e["position"] for e in detail})
-            row = dict({k: v for k, v in x.items() if k != "ids"}, finish=finish, tokens=toks, text=tok.decode(toks), events=events, detail=detail)
+            row = dict({k: v for k, v in x.items() if k != "ids"}, finish=finish, tokens=toks, text=tok.decode(toks), events=events, detail=detail, **({"open": c} if rules.SIDE.get("open") else {}))
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
             f.flush()
             print(x["id"], finish, len(toks), "events", len(events), flush=True)

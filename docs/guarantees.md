@@ -38,7 +38,8 @@ not that a loop or a condition was really there.
   the first changed id either model writes, the same in both or not: from there the edited model also reads a changed input. A ban row is then also what the model reads for a banned token in its input.
 - **An inference-time edit** (`kestrom generate`): the weights do not change. Each output records its events, the
   output positions where an edit acted (conditional steering: position 0 when the condition fires; rules: every position where a
-  rule fired; a phrase ban: the start of the phrase it went back to; the loop guard: the start of the first loop). Before the first
+  rule fired; a phrase ban: the start of the phrase it went back to; the loop guard: the start of the first loop; an `open` line: every
+  position where it took another token than the top one). Before the first
   event the decoding is the original's, so the output first differs at or after it (G2 with the range `events`).
 
 ## Tier 2: the weights inside the declaration
@@ -82,6 +83,9 @@ kestrom.inspect`).
 - That the range is right. Whether a banned token should be banned, or a condition fires on the right prompts, is outside the check.
   `kestrom rows ban` matches a string inside every token that holds it, also where the string is part of a correct word. A ban row keeps
   a banned logit at most -100 at the positions it was made from; elsewhere it is measured, not bounded.
+- That the class an `open` line opens the output with is right, or that the text after it agrees with it: G2 covers the output
+  before the first event only. OUT records the class (`open`) and what the rules read (`data`), so the opening can be recomputed
+  with `kestrom rules run`; no check of kestrom-verify does so.
 - Anything about `kestrom rules run`, `kestrom rules build` and `kestrom rules weigh`: they edit no model and have no tier. They show the rules' answers on
   the inputs given.
 - Agreement across runtimes. The comparison is between the original and the edited model in the same runtime. llama.cpp and MLX give
@@ -112,4 +116,4 @@ twice.
 
 Inputs: `PROMPTS.json` is `[{"id": ..., "ids": [prompt token ids]}, ...]`; `INPUTS.json` adds the answer tokens as `"tokens"`. Other
 keys are copied to the outputs. A generation (JSONL) has `id`, `finish` (`stop` or `length`), `tokens` (without the stop token) and
-`text`; an inference-time edit adds `events` and `detail` (`python -m pydoc kestrom.generate`).
+`text`; an inference-time edit adds `events` and `detail`, and with an `open` line `open` (`python -m pydoc kestrom.generate`).
