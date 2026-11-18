@@ -34,7 +34,7 @@ Never state a guarantee no check computed. If U0 fails, G1 and G2 in that report
 | Change style only where a condition on the prompt holds | `kestrom steer direction`, then `in ... prompt` and `add` lines | `compare events` |
 | Stop thinking loops | a `loopguard` line | `compare events` (`examples/loop-guard`) |
 | Rules over probed features of the hidden state | `kestrom rules fit`, then `kestrom generate --rules FIT.npz` | `compare events` |
-| Try rules, or a small classifier written by hand, with no model | `kestrom rules run` (`kestrom rules build` writes the network out) | the labels in DATA (no tier) |
+| Try rules, or a small classifier or state machine written by hand, with no model | `kestrom rules run` (`kestrom rules build` writes the network out; `kestrom rules weigh` fits the out coefficients to labels) | the labels in DATA (no tier) |
 | Set output rows toward target answers | `kestrom rows lsq` | as a row edit |
 | Lower the tokens that start listed phrases, in the output rows | `kestrom rows ftpo` (from the phrase events of `kestrom generate`) | as a row edit |
 | Find where to edit (reads only) | `kestrom find direction / lens / reverse / writers / heads` | — |
@@ -103,7 +103,8 @@ It edits no model: claim no tier, only how many held-out answers agree with thei
    `count` gives its matches and `number` the number in its group: gate these, like values, with `1*x >= T`, not `all` or `any`.
 3. Run on dev, read the ids answered wrong and the `fired` units, name the cause, change only what it needs, and keep every
    version with its dev score.
-4. Pick the best version on dev, not the last, and report its held-out score once.
+4. Pick the best version on dev, not the last, and report its held-out score once. `kestrom rules weigh` on dev only: it fits
+   the out lines to the labels it is given, so its score on those entries is not a held-out score.
 
 ## Rules that keep reports valid
 

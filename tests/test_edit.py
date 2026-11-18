@@ -203,15 +203,47 @@ def test_rules_run_registers(tmp_path, capsys):
     assert r["registers"] == {"a": 3.0, "b": 3.0, "n": 3.0} and r["steps"][:4] == ["going", "going", "going", "done"]
     rules.build(str(tmp_path / "r.dsl"), str(tmp_path / "n.npz"))
     n = np.load(tmp_path / "n.npz")
-    assert n["columns"].tolist() == ["a", "b", "n", "__one__"] and n["set_register"].tolist() == ["a", "b", "n", "n"]
-    assert n["S"].tolist() == [[1, -1, 0, 0], [-1, 1, 0, 0], [0, 0, 1, 1], [0, 0, 1, 1]] and n["set_unit"].tolist() == [0, 1, 0, 1]
+    assert n["set_register"].tolist() == ["a", "b", "n", "n"] and n["set_unit"].tolist() == [0, 1, 0, 1]
+    assert n["set_expression"].tolist() == ["a - b", "b - a", "n + 1", "n + 1"]
     for bad in ["h1 x: any(v)\nh2 X: any(x)\nset r: zz if X\nout c: X\n", 'in r: match "a"\nh1 x: any(r)\nh2 X: any(x)\nset r: 1 if X\nout c: X\n']:
         (tmp_path / "r.dsl").write_text(bad)  # zz is no input or register; r is an in line
         with pytest.raises(SystemExit):
             rules.build(str(tmp_path / "r.dsl"), str(tmp_path / "n.npz"))
     with pytest.raises(SystemExit):
         rules.model_rules(gcd)
-    assert rules.compile_rules("h1 x: any(v)\nh2 X: any(x)\nset r: 2 * v - 1.5 + r if X\n")["sets"] == [("r", [("v", 2.0), ("__one__", -1.5), ("r", 1.0)], 0)]
+    assert rules.value("(2 * v - 1.5) % 4 + r * r / 2 - 7 // 2", {"v": 5, "r": 3.0}) == 0.5 + 4.5 - 3
+    for bad in ["set r: 3 4 if X", "set r: v.x if X", "set r: abs(v) if X", "set r: v ** 2 if X", "out c: X X", "out c: 2*3*X"]:
+        with pytest.raises(ValueError):
+            rules.compile_rules("h1 x: any(v)\nh2 X: any(x)\n" + bad + "\n")
+    # Euclid by remainder, one head for the state and one for the size of a; a numeric output scored against targets
+    (tmp_path / "r.dsl").write_text("h1 pos: 1*b >= 1\nh1 big: 1*a >= 10\nh2 go: any(pos)\nh2 stop: all(!pos)\nh2 B: any(big)\nh2 S: all(!big)\n"
+                                    "set a: b if go\nset b: a % b if go\nset twice: 2 * a if stop\n"
+                                    'out state/done: 1*stop\nout state/going: 1*go\nout size/big: 1*B\nout size/small: 1*S\n')
+    (tmp_path / "d.json").write_text(json.dumps([{"id": i, "values": {"a": a, "b": b}, "steps": 8, "label": {"state": "done", "size": "big" if math.gcd(a, b) >= 10 else "small"},
+                                                  "targets": {"a": math.gcd(a, b), "twice": 2 * math.gcd(a, b)}} for i, (a, b) in enumerate([(1071, 462), (30, 20), (7, 13)])]))
+    rules.run(str(tmp_path / "r.dsl"), str(tmp_path / "d.json"), str(tmp_path / "o.jsonl"))
+    printed = capsys.readouterr().out
+    assert "labelled 3 right 3 no answer 0 wrong []" in printed and "targets {'a': (3, 0.0), 'twice': (3, 0.0)}" in printed
+    assert json.loads(open(tmp_path / "o.jsonl").readline())["class"] == {"state": "done", "size": "big"}
+    (tmp_path / "d.json").write_text(json.dumps([{"id": i, "values": {"a": 30, "b": 20}, "steps": s, "label": lab} for i, (s, lab) in enumerate(
+        [(8, {"size": "big"}), (8, {"state": "going", "size": "big"}), (8, None), (1, {"state": "going", "size": None})])]))
+    rules.run(str(tmp_path / "r.dsl"), str(tmp_path / "d.json"), str(tmp_path / "o.jsonl"))
+    assert "labelled 4 right 1 no answer 0 wrong [1, 2, 3]" in capsys.readouterr().out  # a label of some heads; one head wrong; null
+
+
+def test_rules_weigh_fits_the_out_lines(tmp_path, capsys):
+    from kestrom import rules
+    (tmp_path / "r.dsl").write_text('in a: match "a"  # kept\nin b: match "b"\nh1 x: any(a)\nh1 y: any(b)\nh2 A: any(x)\nh2 B: any(y)\n'
+                                    'out "p:q": 1*B\nout r: 1*A\n')  # the out lines the wrong way round
+    data = [{"id": i, "text": t, "label": c} for i, (t, c) in enumerate([("a", "p:q"), ("b", "r"), ("ab", "p:q"), ("", None)] * 3)]
+    (tmp_path / "d.json").write_text(json.dumps(data))
+    rules.run(str(tmp_path / "r.dsl"), str(tmp_path / "d.json"), str(tmp_path / "o.jsonl"))
+    assert "labelled 12 right 3 " in capsys.readouterr().out
+    rules.weigh(str(tmp_path / "r.dsl"), str(tmp_path / "d.json"), str(tmp_path / "w.dsl"))
+    text = (tmp_path / "w.dsl").read_text()
+    assert text.startswith('in a: match "a"  # kept\n') and text.count("out ") == 2 and 'out "p:q": ' in text
+    rules.run(str(tmp_path / "w.dsl"), str(tmp_path / "d.json"), str(tmp_path / "o.jsonl"))
+    assert "labelled 12 right 12 no answer 0 wrong []" in capsys.readouterr().out
     with pytest.raises(ValueError):
         rules.compile_rules("h1 x: any(v)\nh2 X: any(x)\nset r: 1\n")
 

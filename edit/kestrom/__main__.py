@@ -9,6 +9,7 @@
   rules run RULES.dsl DATA.json OUT.jsonl               the rules as a network of their own, with no model, on given
                                                         texts and values (no tier: nothing is edited)
   rules build RULES.dsl NET.npz                         that network written out
+  rules weigh RULES.dsl DATA.json OUT.dsl [RIDGE]       its out lines fitted to labels by least squares
   steer direction MODEL TARGET.json SOURCE.json FIRE.json QUIET.json OUT.npz
                                                         a direction and a condition (in and add lines)
   rows ban-row MODEL INPUTS.json ROW.npy                the row that bans a token
@@ -34,7 +35,7 @@ import sys
 from kestrom_verify import call
 
 # command: (the module whose docstring is its help, its function or {kind: function}); "module:function" for another module
-COMMANDS = {"generate": ("generate", "main"), "rules": ("rules", {"fit": "fit", "write-mlp": "mlp:write_mlp", "run": "run", "build": "build"}),
+COMMANDS = {"generate": ("generate", "main"), "rules": ("rules", {"fit": "fit", "write-mlp": "mlp:write_mlp", "run": "run", "build": "build", "weigh": "weigh"}),
             "steer": ("steer", {"direction": "direction"}), "rows": ("rows", {"ban-row": "row", "ban": "ban", "lsq": "lsq", "ftpo": "ftpo"}),
             "trigger": ("trigger", {k: k for k in ("prompts", "train", "write")}),
             "find": ("find", {k: k for k in ("direction", "lens", "reverse", "writers", "heads")}),
