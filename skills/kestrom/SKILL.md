@@ -18,7 +18,7 @@ The commands that run or quantize a model use MLX on Apple Silicon (each help sa
 
 | Tier | Edits | Checks | What you may say |
 |---|---|---|---|
-| 1. Outputs | `kestrom rows` (rows of the output layer), `kestrom generate --rules` (decoding-time edits) | `range` (W), `logits` (U0, G1), `compare` (U0, G2) | Greedy output is the original's until the range is reached; for a row edit, every logit of an unchanged row is bit-identical (with a tied output layer: on inputs that hold no changed id) |
+| 1. Outputs | `kestrom rows` (rows of the output layer), `kestrom generate --rules` (decoding-time edits), `kestrom ifc` (twin-track non-interference) | `range` (W), `logits` (U0, G1), `compare` (U0, G2) | Greedy output is the original's (or reference track's) until the range is reached; for a row edit, every logit of an unchanged row is bit-identical (with a tied output layer: on inputs that hold no changed id) |
 | 2. Weights | `kestrom edit ...`, `kestrom rules write-mlp`, `kestrom trigger` | `diff` with a declaration (D) | Only the declared tensors / rows changed. Nothing about outputs; `measure` counts how much they moved |
 | 3. Measured only | `kestrom merge`, `kestrom train sft-data`, any fine-tune or quantization made elsewhere | `measure`; `diff` (it pairs tensors by name: a folder quantized by `mlx_lm convert` packs and, for Qwen3.5, renames them, so it shows little beyond that); `kestrom inspect` (evidence to read) | Counts only. No guarantee |
 
@@ -33,6 +33,8 @@ Never state a guarantee no check computed. If U0 fails, G1 and G2 in that report
 | Keep a string (not a token) out, or avoid stock phrases | a `phrase` line in a rules file, `kestrom generate --rules` | `compare events` |
 | Change style only where a condition on the prompt holds | `kestrom steer direction`, then `in ... prompt` and `add` lines | `compare events` |
 | Stop thinking loops | a `loopguard` line | `compare events` (`examples/loop-guard`) |
+| Keep JSON control keys independent of untrusted data (prompt injection) | `kestrom ifc control` (`ids` full, `clean_ids` untrusted masked) | `compare events` against clean Track B (`examples/ifc-control`) |
+| Prevent secret leakage into public text (`strict-public` zero-flow or `gated-public` lift gate) | `kestrom ifc firewall` (`ids` public+secret, `clean_ids` public only) | `compare events` (`strict-public` vs clean Track B; `gated-public` vs full Track A) |
 | Make a model's answer open with the class that hand-written rules answer (rules of `kestrom rules run`, connected to a model) | an `open [HEAD]: FILE [CLASS] ["TEXT"]` line; each prompt carries `data`, what the rules read | `compare events` (`examples/rules-open`); it does not check that the class or the text after it is right |
 | Rules over probed features of the hidden state | `kestrom rules fit`, then `kestrom generate --rules FIT.npz` | `compare events` |
 | Try rules, or a small classifier or state machine written by hand, with no model | `kestrom rules run` (`kestrom rules build` writes the network out; `kestrom rules weigh` fits the out coefficients to labels) | the labels in DATA (no tier) |
