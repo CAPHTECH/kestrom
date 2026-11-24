@@ -36,11 +36,13 @@ not that a loop or a condition was really there.
   inputs that hold no changed id, so `logits` checks G1 on the sequences whose ids and tokens hold none, `compare` (given the
   prompts) checks G2 on the prompts that hold none, and both count the others, not checked. In an output, the range is reached at
   the first changed id either model writes, the same in both or not: from there the edited model also reads a changed input. A ban row is then also what the model reads for a banned token in its input.
-- **An inference-time edit** (`kestrom generate`): the weights do not change. Each output records its events, the
+- **An inference-time edit** (`kestrom generate`, `kestrom ifc`): the weights do not change. Each output records its events, the
   output positions where an edit acted (conditional steering: position 0 when the condition fires; rules: every position where a
   rule fired; a phrase ban: the start of the phrase it went back to; the loop guard: the start of the first loop; an `open` line: every
-  position where it took another token than the top one). Before the first
-  event the decoding is the original's, so the output first differs at or after it (G2 with the range `events`).
+  position where it took another token than the top one; `kestrom ifc control`: the declared `DATA` positions, compared against two runs
+  of clean Track B (both `fast` single-track lazy switching and `audit` two-track modes give the same G2 check); `kestrom ifc firewall --mode strict-public`: empty `events`, compared against clean Track B; `kestrom ifc firewall --mode gated-public`:
+  every position where a high-lift token was blocked, compared against unprotected Track A). Before the first
+  event the decoding is the reference track's, so the output first differs at or after it (G2 with the range `events`).
 
 ## Tier 2: the weights inside the declaration
 
@@ -96,6 +98,12 @@ kestrom.inspect`).
   uses the text or that its thinking ends.
 - Anything about `kestrom rules run`, `kestrom rules build` and `kestrom rules weigh`: they edit no model and have no tier. They show the rules' answers on
   the inputs given.
+- With `kestrom ifc`: that the prompt split between `ids` and `clean_ids` or the choice of control/data keys is right. Strict prefix
+  non-interference (G2 against clean Track B) covers tokens before the first `DATA` position only: if a `CONTROL` key appears after a
+  `DATA` key without `ISOLATE_B`, Track B sees the generated `DATA` tokens (an indirect channel); `ISOLATE_B` is tested in unit tests
+  only. In `kestrom ifc firewall`, `strict-public` guarantees zero information flow from the removed span (bit-identical to Track B),
+  whereas `gated-public` guarantees only agreement with Track A up to the first blocked token — low-lift leakage below `TAU` is not
+  bounded and must be measured.
 - Agreement across runtimes. The comparison is between the original and the edited model in the same runtime. llama.cpp and MLX give
   different greedy outputs for the same original weights.
 - Sampling. The guarantees are about teacher-forced logits and greedy decoding.

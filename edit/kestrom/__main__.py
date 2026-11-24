@@ -2,6 +2,8 @@
   generate MODEL PROMPTS.json OUT.jsonl [--rules RULES.dsl|FIT.npz] [--max-tokens N]
                                                         greedy decoding with the inference-time edits of a rules file; the
                                                         output is the original's until the first event
+  ifc {control, firewall} ...                           twin-track information flow control at decoding time (tier 1: check
+                                                        with kestrom-verify compare events)
   rules fit MODEL RULES.dsl DATA.json OUT.npz [BALANCE] [K] [STEPS] [LR]
                                                         probes for rules that read probed features
   rules write-mlp MODEL RULES.dsl DATA.json DST [BALANCE] [K]
@@ -26,7 +28,7 @@
   merge A B C LAMBDA DST                                weight arithmetic, A + LAMBDA (B - C) (tier 3)
   inspect {quant, base, shape, lens, behavior, trigger, gguf} ...
                                                         look for a backdoor in a delivered fine-tune (reads; base and gguf write a folder; tier 3)
-kestrom COMMAND --help prints the help of its module; every module's docstring has the details (python -m pydoc kestrom.generate, kestrom.rules, kestrom.steer, kestrom.loopguard,
+kestrom COMMAND --help prints the help of its module; every module's docstring has the details (python -m pydoc kestrom.generate, kestrom.ifc, kestrom.rules, kestrom.steer, kestrom.loopguard,
 kestrom.rows, kestrom.trigger, kestrom.find, kestrom.mlp,
 kestrom.units, kestrom.train, kestrom.inspect)."""
 import importlib
@@ -35,7 +37,8 @@ import sys
 from kestrom_verify import call
 
 # command: (the module whose docstring is its help, its function or {kind: function}); "module:function" for another module
-COMMANDS = {"generate": ("generate", "main"), "rules": ("rules", {"fit": "fit", "write-mlp": "mlp:write_mlp", "run": "run", "build": "build", "weigh": "weigh"}),
+COMMANDS = {"generate": ("generate", "main"), "ifc": ("ifc", {"control": "control", "firewall": "firewall"}),
+            "rules": ("rules", {"fit": "fit", "write-mlp": "mlp:write_mlp", "run": "run", "build": "build", "weigh": "weigh"}),
             "steer": ("steer", {"direction": "direction"}), "rows": ("rows", {"ban-row": "row", "ban": "ban", "lsq": "lsq", "ftpo": "ftpo"}),
             "trigger": ("trigger", {k: k for k in ("prompts", "train", "write")}),
             "find": ("find", {k: k for k in ("direction", "lens", "reverse", "writers", "heads")}),
