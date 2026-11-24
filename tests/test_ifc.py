@@ -11,6 +11,7 @@ from kestrom.ifc import (
     JsonKeyRegionPolicy,
     PublicRegionPolicy,
     decode_control,
+    decode_control_fast,
     decode_firewall,
     kl_divergence,
     token_lift,
@@ -50,6 +51,26 @@ class ScriptedBackend:
         self.fed_b.append(tok_b)
         self.pos += 1
         return self._logits(self.script_a, self.pos), self._logits(self.script_b, self.pos)
+
+    def start_lazy(self, ids_a: Sequence[int], ids_b: Sequence[int]) -> None:
+        self.fed_a, self.fed_b = [], []
+        self.calls_a, self.calls_b = 0, 0
+        self.init_a, self.init_b = False, False
+        self.pos_a, self.pos_b = 0, 0
+
+    def logits_a(self, pending_a: Sequence[int]) -> np.ndarray:
+        self.calls_a += 1
+        self.fed_a.extend(pending_a)
+        self.pos_a = len(self.fed_a)
+        self.init_a = True
+        return self._logits(self.script_a, self.pos_a)
+
+    def logits_b(self, pending_b: Sequence[int]) -> np.ndarray:
+        self.calls_b += 1
+        self.fed_b.extend(pending_b)
+        self.pos_b = len(self.fed_b)
+        self.init_b = True
+        return self._logits(self.script_b, self.pos_b)
 
 
 def test_json_region_policy_and_smuggling():
@@ -139,6 +160,54 @@ def test_firewall_strict_and_gated_pass_kestrom_verify_compare_events(tmp_path: 
     rep_g = tmp_path / "rep_g.json"
     report.greedy("events", (f_a1, f_a2, f_g), dec, rep_g)
     assert all(ok for *_, ok in report.verdict(report.read(rep_g)))
+
+
+def test_control_fast_single_track_switching_and_verify(tmp_path: Path):
+    vocab = ["<eos>", '{"tool":"', "log_ticket", "delete_all", '","summary":"', "AC broken", "MASKED", '"}']
+    script_a = [{1: 9.0}, {3: 9.0, 2: -2.0}, {4: 9.0}, {5: 9.0, 6: -1.0}, {7: 9.0}, {0: 9.0}]
+    script_b = [{1: 9.0}, {2: 9.0, 3: -4.0}, {4: 9.0}, {6: 9.0, 5: -1.0}, {7: 9.0}, {0: 9.0}]
+    pol = JsonKeyRegionPolicy(("tool",), ("summary",))
+
+    be_fast = ScriptedBackend(vocab, script_a, script_b)
+    res_fast = decode_control_fast(be_fast, [1], [1], pol, max_tokens=10)
+    res_audit = decode_control(ScriptedBackend(vocab, script_a, script_b), [1], [1], pol, max_tokens=10)
+
+    # Identical output tokens & DATA events to audit mode, with strictly 1 model call per generated step (including stop).
+    assert res_fast["tokens"] == res_audit["tokens"]
+    assert res_fast["text"] == '{"tool":"log_ticket","summary":"AC broken"}'
+    assert res_fast["events"] == res_audit["events"] == [3, 4]
+    assert res_fast["ifc"]["mode"] == "control-fast"
+    assert res_fast["ifc"]["track_switches"] == 2  # CONTROL -> DATA -> CONTROL(eos)
+    assert be_fast.calls_a + be_fast.calls_b == len(res_fast["tokens"]) + 1  # 6 steps -> 6 single-track calls total
+    assert be_fast.calls_a == 2 and be_fast.calls_b == 4  # Track A ran ONLY on the 2 DATA steps
+    assert be_fast.fed_a == [1, 2, 4, 5]  # caught up cleanly on leading control tokens without duplicates
+    assert be_fast.fed_b == [1, 2, 4, 5, 7]  # caught up cleanly on DATA tokens before closing EOS step
+
+    # End-to-end Tier 1 check with real kestrom_verify.report.greedy("events", ...)
+    clean = {"id": "p1", "finish": "stop", "tokens": [1, 2, 4, 6, 7], "text": '{"tool":"log_ticket","summary":"MASKED"}'}
+    f_b1, f_b2, f_fast = tmp_path / "b1.jsonl", tmp_path / "b2.jsonl", tmp_path / "fast.jsonl"
+    report.write_lines(f_b1, [clean])
+    report.write_lines(f_b2, [clean])
+    report.write_lines(f_fast, [{"id": "p1", **res_fast}])
+    rep1, rep2 = tmp_path / "rf1.json", tmp_path / "rf2.json"
+    report.greedy("events", (f_b1, f_b2, f_fast), lambda xs: "".join(vocab[t] for t in xs), rep1)
+    report.greedy("events", (f_b1, f_b2, f_fast), lambda xs: "".join(vocab[t] for t in xs), rep2)
+    assert rep1.read_bytes() == rep2.read_bytes()
+    assert all(ok for *_, ok in report.verdict(report.read(rep1)))
+
+
+def test_control_fast_clamps_smuggling_and_isolates_b():
+    vocab = ["<eos>", '{"tool":"ok","summary":"', "hi", '","tool":"evil"', " safe", '"}']
+    script_a = [{1: 9.0}, {2: 9.0}, {3: 9.0, 4: 5.0}, {5: 9.0}, {0: 9.0}]
+    script_b = [{1: 9.0}, {2: 9.0}, {4: 9.0}, {5: 9.0}, {0: 9.0}]
+    be = ScriptedBackend(vocab, script_a, script_b)
+    res = decode_control_fast(be, [1], [1], JsonKeyRegionPolicy(("tool",), ("summary",)), max_tokens=10, isolate_b=2)
+    assert res["text"] == '{"tool":"ok","summary":"hi safe"}'
+    assert res["ifc"]["boundary_clamps"] == 1
+    assert res["ifc"]["isolated_b"] is True
+    # Track B received neutral token 2 for the DATA tokens (pos 1, 2, 3) when waking for EOS at pos 4.
+    assert be.fed_b == [1, 2, 2, 2]
+    assert be.fed_a == [1, 2, 4]
 
 
 def test_math_helpers():

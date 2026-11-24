@@ -15,7 +15,7 @@ The script runs three prompts (one benign email and two emails containing prompt
 and `approved`):
 
 1. `kestrom-verify generate mlx` runs clean Track B twice (`out/clean1.jsonl`, `out/clean2.jsonl`) and unprotected Track A once (`out/base.jsonl`).
-2. `kestrom ifc control` runs twin-track decoding (`out/ifc.jsonl`).
+2. `kestrom ifc control` runs twin-track decoding (`out/ifc.jsonl`, using `fast` single-track lazy switching by default; pass `audit` after `192` to also run Track A during control spans and record `control_override` events).
 3. `kestrom-verify compare events` checks `out/ifc.jsonl` against `out/clean1.jsonl` and `out/clean2.jsonl`, writing `out/report.json`.
 
 Put control keys before data keys so `G2` covers every control token. If a control key appears after a data key without `ISOLATE_B`,

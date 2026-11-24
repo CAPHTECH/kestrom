@@ -40,7 +40,7 @@ not that a loop or a condition was really there.
   output positions where an edit acted (conditional steering: position 0 when the condition fires; rules: every position where a
   rule fired; a phrase ban: the start of the phrase it went back to; the loop guard: the start of the first loop; an `open` line: every
   position where it took another token than the top one; `kestrom ifc control`: the declared `DATA` positions, compared against two runs
-  of clean Track B; `kestrom ifc firewall --mode strict-public`: empty `events`, compared against clean Track B; `kestrom ifc firewall --mode gated-public`:
+  of clean Track B (both `fast` single-track lazy switching and `audit` two-track modes give the same G2 check); `kestrom ifc firewall --mode strict-public`: empty `events`, compared against clean Track B; `kestrom ifc firewall --mode gated-public`:
   every position where a high-lift token was blocked, compared against unprotected Track A). Before the first
   event the decoding is the reference track's, so the output first differs at or after it (G2 with the range `events`).
 

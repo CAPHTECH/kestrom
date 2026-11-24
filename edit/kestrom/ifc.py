@@ -1,16 +1,19 @@
-"""Twin-track information flow control (IFC) at greedy decoding time (MLX, tier 1). Two tracks of the same model run in lockstep
-(sequential Batch=1 matching mlx_lm's generate_step prefill bit for bit): Track A reads `ids` (full prompt with untrusted or secret
-context) and Track B reads `clean_ids` (same prompt with the untrusted or secret span removed or masked). No weights change.
-  kestrom ifc control MODEL PROMPTS.json OUT.jsonl CONTROL_KEYS DATA_KEYS [MAX_TOKENS] [ISOLATE_B]
+"""Twin-track information flow control (IFC) at greedy decoding time (MLX, tier 1). Two tracks of the same model read `ids`
+(Track A: full prompt with untrusted or secret context) and `clean_ids` (Track B: same prompt with the untrusted or secret span
+removed or masked). Prefill matches mlx_lm's generate_step bit for bit; no weights change.
+  kestrom ifc control MODEL PROMPTS.json OUT.jsonl CONTROL_KEYS DATA_KEYS [MAX_TOKENS] [MODE] [ISOLATE_B]
                                                         JSON control-flow non-interference. Structural JSON syntax and values of
                                                         CONTROL_KEYS (comma-separated) come strictly from Track B; values of
                                                         DATA_KEYS come from Track A, clamping any single token that crosses back
                                                         into control syntax. `events` records DATA positions, so
                                                         `kestrom-verify compare events CLEAN1 CLEAN2 OUT MODEL REPORT.json` checks
                                                         that every token before the first DATA span is bit-identical to Track B
-                                                        (U0 and G2). `detail` records every `control_override` and `boundary_clamp`.
-                                                        With ISOLATE_B (a token id), Track B ingests that neutral token during DATA
-                                                        spans instead of Track A's tokens.
+                                                        (U0 and G2). MODE is `fast` (default: single-track lazy switching — runs
+                                                        only Track B in CONTROL and only Track A in DATA, syncing the waking track
+                                                        in one chunked prefill at region boundaries for ~1.0x decode speed) or
+                                                        `audit` (lockstep two-track: runs both tracks every step and logs every
+                                                        `control_override` with `kl_ab` and `lift_a` in `detail`). With ISOLATE_B
+                                                        (a token id), Track B ingests that neutral token during DATA spans.
   kestrom ifc firewall MODEL PROMPTS.json OUT.jsonl [MODE] [TAU] [MAX_TOKENS]
                                                         Semantic secret leakage firewall. MODE is `strict-public` (default) or
                                                         `gated-public`; TAU is the log-probability lift threshold in nats (2.0).
@@ -221,6 +224,115 @@ class TwinTrackBackend(Protocol):
     def step(self, tok_a: int, tok_b: int) -> Tuple[np.ndarray, np.ndarray]: ...
 
 
+class LazyTrackBackend(Protocol):
+    """Interface for single-track lazy-switching control-flow IFC (1 forward call per token)."""
+
+    @property
+    def eos_ids(self) -> Sequence[int]: ...
+
+    def decode(self, tokens: Sequence[int]) -> str: ...
+
+    def start_lazy(self, ids_a: Sequence[int], ids_b: Sequence[int]) -> None: ...
+
+    def logits_a(self, pending_a: Sequence[int]) -> np.ndarray: ...
+
+    def logits_b(self, pending_b: Sequence[int]) -> np.ndarray: ...
+
+
+def decode_control_fast(
+    backend: LazyTrackBackend,
+    ids_a: Sequence[int],
+    ids_b: Sequence[int],
+    policy: JsonKeyRegionPolicy,
+    max_tokens: int = report.MAX_TOKENS,
+    isolate_b: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Single-track lazy-switching control-flow non-interference decoding (~1.0x decode speed).
+
+    Runs only Track B in CONTROL spans and only Track A in DATA spans; whenever the region
+    switches, the waking track catches up in a single chunked prefill. Preserves the exact
+    same Tier 1 G2 guarantee against clean Track B before the first DATA position, without
+    computing Track A's logits during CONTROL spans (so `control_override` audit entries are
+    not collected).
+    """
+    backend.start_lazy(ids_a, ids_b)
+    eos = set(backend.eos_ids)
+    toks: List[int] = []
+    pending_a: List[int] = []
+    pending_b: List[int] = []
+    data_positions: List[int] = []
+    detail: List[Dict[str, Any]] = []
+    control_count = 0
+    switches = 0
+    prev_region: Optional[str] = None
+    finish = "length"
+
+    for pos in range(max_tokens):
+        prefix = backend.decode(toks)
+        region, active_key = policy.classify(prefix)
+        if prev_region is not None and region != prev_region:
+            switches += 1
+        prev_region = region
+
+        if region == CONTROL:
+            lb = backend.logits_b(pending_b)
+            pending_b.clear()
+            chosen = int(np.argmax(lb))
+            tok_a, tok_b = chosen, chosen
+            if chosen not in eos:
+                control_count += 1
+        else:
+            data_positions.append(pos)
+            la = backend.logits_a(pending_a)
+            pending_a.clear()
+            chosen = int(np.argmax(la))
+            cand_text = backend.decode([chosen])
+            if policy.crosses_into_control(prefix, cand_text):
+                order = np.argsort(-np.asarray(la, dtype=np.float64), kind="stable")
+                safe = next((int(c) for c in order[:64] if not policy.crosses_into_control(prefix, backend.decode([int(c)]))), None)
+                if safe is None:
+                    lb = backend.logits_b(pending_b)
+                    pending_b.clear()
+                    safe = int(np.argmax(lb))
+                detail.append({
+                    "kind": "boundary_clamp",
+                    "position": pos,
+                    "key": active_key,
+                    "blocked": chosen,
+                    "blocked_text": cand_text,
+                    "chosen": safe,
+                    "chosen_text": backend.decode([safe]),
+                })
+                chosen = safe
+            tok_a = chosen
+            tok_b = isolate_b if isolate_b is not None else chosen
+
+        if chosen in eos:
+            finish = "stop"
+            break
+        toks.append(chosen)
+        pending_a.append(tok_a)
+        pending_b.append(tok_b)
+
+    return {
+        "finish": finish,
+        "tokens": toks,
+        "text": backend.decode(toks),
+        "events": data_positions,
+        "detail": detail,
+        "ifc": {
+            "mode": "control-fast",
+            "first_data_pos": data_positions[0] if data_positions else None,
+            "control_tokens": control_count,
+            "data_tokens": len(toks) - control_count,
+            "control_overrides": 0,
+            "boundary_clamps": sum(1 for d in detail if d["kind"] == "boundary_clamp"),
+            "track_switches": switches,
+            "isolated_b": isolate_b is not None,
+        },
+    }
+
+
 def decode_control(
     backend: TwinTrackBackend,
     ids_a: Sequence[int],
@@ -406,6 +518,8 @@ class MLXBackend:
         self.tok = tok
         self._cache_a: Any = None
         self._cache_b: Any = None
+        self._ids_a: List[int] = []
+        self._ids_b: List[int] = []
 
     @property
     def eos_ids(self) -> Sequence[int]:
@@ -414,7 +528,7 @@ class MLXBackend:
     def decode(self, tokens: Sequence[int]) -> str:
         return self.tok.decode(list(tokens))
 
-    def _prefill_one(self, ids: Sequence[int], cache: Any) -> Any:
+    def _advance_cache(self, ids: Sequence[int], cache: Any) -> Any:
         import mlx.core as mx
 
         arr = list(ids)
@@ -436,9 +550,9 @@ class MLXBackend:
         from mlx_lm.models.cache import make_prompt_cache
 
         self._cache_a = make_prompt_cache(self.model)
-        la = self._prefill_one(ids_a, self._cache_a)
+        la = self._advance_cache(ids_a, self._cache_a)
         self._cache_b = make_prompt_cache(self.model)
-        lb = self._prefill_one(ids_b, self._cache_b)
+        lb = self._advance_cache(ids_b, self._cache_b)
         return np.array(la.astype(mx.float32)), np.array(lb.astype(mx.float32))
 
     def step(self, tok_a: int, tok_b: int) -> Tuple[np.ndarray, np.ndarray]:
@@ -449,6 +563,34 @@ class MLXBackend:
         mx.eval(la, lb)
         return np.array(la.astype(mx.float32)), np.array(lb.astype(mx.float32))
 
+    def start_lazy(self, ids_a: Sequence[int], ids_b: Sequence[int]) -> None:
+        self._cache_a = None
+        self._cache_b = None
+        self._ids_a = list(ids_a)
+        self._ids_b = list(ids_b)
+
+    def logits_a(self, pending_a: Sequence[int]) -> np.ndarray:
+        import mlx.core as mx
+        from mlx_lm.models.cache import make_prompt_cache
+
+        if self._cache_a is None:
+            self._cache_a = make_prompt_cache(self.model)
+            la = self._advance_cache(self._ids_a + list(pending_a), self._cache_a)
+        else:
+            la = self._advance_cache(pending_a, self._cache_a)
+        return np.array(la.astype(mx.float32))
+
+    def logits_b(self, pending_b: Sequence[int]) -> np.ndarray:
+        import mlx.core as mx
+        from mlx_lm.models.cache import make_prompt_cache
+
+        if self._cache_b is None:
+            self._cache_b = make_prompt_cache(self.model)
+            lb = self._advance_cache(self._ids_b + list(pending_b), self._cache_b)
+        else:
+            lb = self._advance_cache(pending_b, self._cache_b)
+        return np.array(lb.astype(mx.float32))
+
 
 def _row(prompt: Dict[str, Any], res: Dict[str, Any]) -> Dict[str, Any]:
     out = {k: v for k, v in prompt.items() if k not in ("ids", "clean_ids")}
@@ -456,19 +598,23 @@ def _row(prompt: Dict[str, Any], res: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
-def control(model_dir, prompts_file, out, control_keys, data_keys, max_tokens=report.MAX_TOKENS, isolate_b=None):
+def control(model_dir, prompts_file, out, control_keys, data_keys, max_tokens=report.MAX_TOKENS, mode="fast", isolate_b=None):
     """Run `kestrom ifc control` on PROMPTS.json and write OUT.jsonl."""
     from mlx_lm import load
 
+    mode = str(mode)
+    if mode not in ("fast", "audit"):
+        raise SystemExit(f"MODE is fast or audit, not {mode!r}")
     ckeys = [k.strip() for k in str(control_keys).split(",") if k.strip()]
     dkeys = [k.strip() for k in str(data_keys).split(",") if k.strip()]
     iso = None if isolate_b in (None, "", "none") else int(isolate_b)
     policy = JsonKeyRegionPolicy(ckeys, dkeys)
     model, tok = load(str(model_dir))
     backend = MLXBackend(model, tok)
+    runner = decode_control_fast if mode == "fast" else decode_control
     with open(out, "w", encoding="utf-8") as f:
         for x in report.read(prompts_file):
-            res = decode_control(backend, x["ids"], x["clean_ids"], policy, int(max_tokens), iso)
+            res = runner(backend, x["ids"], x["clean_ids"], policy, int(max_tokens), iso)
             row = _row(x, res)
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
             f.flush()
