@@ -67,3 +67,70 @@ def test_gguf_layout_round_trips_with_grouped_value_heads():
     assert ki.to_gguf(p + "in_proj_z.weight", z, h)[:, 0].tolist() == [0, 1, 4, 5, 2, 3, 6, 7]
     assert ki.to_gguf(p + "norm.weight", np.zeros(2), h).tolist() == [0, 0]
     assert ki.to_gguf("model.language_model.layers.0.input_layernorm.weight", np.zeros(4), h).tolist() == [1, 1, 1, 1]
+
+
+def test_mirror_detects_coherent_and_adaptive_residuals_with_zero_benign_fp():
+    from kestrom import mirror as km
+
+    rng = np.random.default_rng(7)
+    w_benign = rng.standard_normal((128, 256)).astype(np.float32) * 0.05
+    wq_b, c_b, sc_b, bi_b = km.affine_quantize_numpy(w_benign, bits=4, group_size=64)
+    st_benign = km.analyze_residual(w_benign, wq_b, c_b, sc_b, bits=4, group_size=64, seed=0)
+    assert 0.90 <= st_benign["rho1"] <= 1.10
+    assert 0.40 <= st_benign["mean_u"] <= 0.60
+    assert abs(st_benign["boundary_frac_85"] - 0.15) <= 0.05
+
+    # Negative-scale invariance (MLX affine returns negative scales when |min| > |max|)
+    st_neg = km.analyze_residual(w_benign, wq_b, c_b, -sc_b, bits=4, group_size=64, seed=0)
+    assert abs(st_neg["mean_u"] - st_benign["mean_u"]) < 1e-6
+    assert abs(st_neg["boundary_frac_85"] - st_benign["boundary_frac_85"]) < 1e-6
+
+    # Coherent low-rank shift hidden strictly inside quantization boxes (adaptive histogram-stealth: |e| <= 0.40|s|)
+    u_vec = rng.standard_normal((128, 1)).astype(np.float32)
+    v_vec = rng.standard_normal((1, 256)).astype(np.float32)
+    sign_rank1 = np.sign(u_vec @ v_vec)
+    sc_full = np.repeat(sc_b, 64, axis=1)
+    w_adv = wq_b - 0.35 * sc_full * sign_rank1
+    # Lock group min/max anchors so quantization grid is unchanged
+    wg_b = w_benign.reshape(128, 4, 64)
+    wg_a = w_adv.reshape(128, 4, 64)
+    anchors = (wg_b == wg_b.min(axis=2, keepdims=True)) | (wg_b == wg_b.max(axis=2, keepdims=True))
+    w_adv = np.where(anchors, wg_b, wg_a).reshape(128, 256).astype(np.float32)
+    wq_a, c_a, sc_a, _ = km.affine_quantize_numpy(w_adv, bits=4, group_size=64)
+    st_adv = km.analyze_residual(w_adv, wq_a, c_a, sc_a, bits=4, group_size=64, seed=0)
+    assert st_adv["rho1"] > 2.0
+
+    # Outlier-injection block collapse on 40 blocks
+    w_out = w_benign.copy().reshape(128, 4, 64)
+    for r in range(40):
+        w_out[r, 0, 0] = 50.0 * float(np.max(np.abs(w_out[r, 0])))
+    w_out = w_out.reshape(128, 256)
+    wq_o, c_o, sc_o, _ = km.affine_quantize_numpy(w_out, bits=4, group_size=64)
+    st_out = km.analyze_residual(w_out, wq_o, c_o, sc_o, bits=4, group_size=64, seed=0)
+    assert st_out["collapse_ge90_count"] >= 30
+
+    judged = km.judge_mirror_tensors({"benign": st_benign, "adv": st_adv, "outlier": st_out})
+    assert judged["flagged"] == ["adv", "outlier"]
+    assert "spectral_coherence" in judged["reasons"]["adv"]
+    assert "block_collapse" in judged["reasons"]["outlier"]
+
+
+def test_stochastic_round_grid_is_unbiased_and_preserves_anchors_and_grid():
+    from kestrom import mirror as km
+
+    rng = np.random.default_rng(11)
+    w = rng.standard_normal((32, 128)).astype(np.float32) * 0.1
+    _, _, scales, biases = km.affine_quantize_numpy(w, bits=4, group_size=64)
+
+    # Empirical expectation E[Q_SR(W)] == W across independent seeds
+    acc = np.zeros_like(w, dtype=np.float64)
+    for s in range(200):
+        acc += km.stochastic_round_grid(w, scales, biases, bits=4, group_size=64, seed=s)
+    np.testing.assert_allclose(acc / 200.0, w, atol=5e-3)
+
+    # Anchor preservation: re-quantizing Q_SR(W) recovers the exact same disarmed grid
+    wq_sr = km.stochastic_round_grid(w, scales, biases, bits=4, group_size=64, seed=42)
+    wq_sr2, _, sc2, bi2 = km.affine_quantize_numpy(wq_sr, bits=4, group_size=64)
+    np.testing.assert_allclose(sc2, scales, atol=1e-6)
+    np.testing.assert_allclose(bi2, biases, atol=1e-6)
+    np.testing.assert_allclose(wq_sr2, wq_sr, atol=1e-5)

@@ -14,7 +14,8 @@ from kestrom_verify import call
     (["ifc"], k, ifc.__doc__), (["ifc", "--help"], k, ifc.__doc__), (["ifc", "nope"], k, ifc.__doc__),
     (["ifc", "control"], k, ifc.__doc__), (["ifc", "firewall"], k, ifc.__doc__),
     (["inspect"], k, inspect.__doc__), (["inspect", "--help"], k, inspect.__doc__), (["inspect", "nope"], k, inspect.__doc__),
-    (["inspect", "shape"], k, inspect.__doc__), (["rows", "ban", "-h"], k, rows.__doc__),
+    (["inspect", "shape"], k, inspect.__doc__), (["inspect", "mirror"], k, inspect.__doc__), (["inspect", "disarm"], k, inspect.__doc__),
+    (["rows", "ban", "-h"], k, rows.__doc__),
     ([], v, v.__doc__), (["range", "--help"], v, v.__doc__), (["range"], v, v.__doc__), (["generate", "mlx"], v, v.__doc__),
     (["logits", "--help"], v, v.__doc__), (["diff"], v, v.__doc__)])
 def test_help(monkeypatch, argv, cli, doc):
