@@ -221,9 +221,10 @@ def stochastic_round_grid(
     group_size: int = DEFAULT_GROUP,
     seed: int = 0,
 ) -> np.ndarray:
-    """Anchor-preserving unbiased stochastic rounding on the group-wise affine grid (E[Q_SR(W)] = W).
+    """Anchor-preserving stochastic rounding on the group-wise affine grid, unbiased (E[Q_SR(W)] = W) for values inside the grid.
 
-    Preserves exact group min and max anchors so subsequent standard nearest-grid quantization
+    MLX moves the scale so that zero is on the grid, so the grid can stop short of a group's extreme: the values past its last
+    point (but the anchor itself) always round to that point. Preserves exact group min and max anchors so subsequent standard nearest-grid quantization
     recovers the disarmed quantized grid points without re-triggering quantization-gap alignment.
     """
     rows, cols = w_f32.shape
@@ -276,7 +277,7 @@ def _behavior_mirror_mlx(
     from mlx.utils import tree_flatten, tree_unflatten
     from mlx_lm import load
 
-    from .rows import output_weight, trunk
+    from .inspect import mean_logits
 
     model, tok = load(str(model_dir))
     flat = dict(tree_flatten(model.parameters()))
@@ -295,15 +296,7 @@ def _behavior_mirror_mlx(
         mx.eval(model.parameters())
 
     def mean_logits_all() -> np.ndarray:
-        w_out = output_weight(model).astype(mx.float32)
-        tr = trunk(model)
-        rows = []
-        for ids in prompts_ids:
-            h = tr(mx.array([list(ids)]))[0].astype(mx.float32)
-            x = mx.mean(h @ w_out.T, axis=0)
-            mx.eval(x)
-            rows.append(np.array(x, dtype=np.float32))
-        return np.stack(rows, axis=0)
+        return np.stack([mean_logits(model, list(ids)) for ids in prompts_ids], axis=0)
 
     Z0 = mean_logits_all()
     apply({k: (orig[k].astype(mx.float32) + err[k]).astype(orig[k].dtype) for k in orig})
@@ -372,9 +365,12 @@ def mirror(
     import mlx.core as mx
     from kestrom_verify import report
 
+    from .inspect import write
+
     bits, group, mode = int(bits), int(group), str(mode)
-    if mode != "affine":
-        raise SystemExit(f"mirror supports affine mode only, not {mode!r}")
+    if mode != "affine" or bits not in (2, 4, 8):
+        raise SystemExit(f"mirror supports affine mode with 2, 4 or 8 bits only, not {mode!r} {bits}")
+    P = None if prompts in (None, "", "none") else [p["ids"] for p in report.read(prompts)]
 
     folder = Path(model_dir)
     tensors_out: Dict[str, Any] = {}
@@ -407,11 +403,10 @@ def mirror(
         "tensors": tensors_out,
     }
 
-    if prompts not in (None, "", "none"):
-        P = [p["ids"] for p in report.read(prompts)]
+    if P is not None:
         res["behavior"] = _behavior_mirror_mlx(str(model_dir), P, bits=bits, group_size=group, mode=mode)
 
-    Path(out).write_text(json.dumps(res, ensure_ascii=False, indent=1), encoding="utf-8")
+    write(out, res)
     bstr = ""
     if "behavior" in res:
         b = res["behavior"]
@@ -438,6 +433,9 @@ def disarm(model_dir, mirror_file, dst, seed=0):
 
     src, dst_p = Path(model_dir), Path(dst)
     shards = sorted(src.glob("*.safetensors"))
+    missing = sorted(flagged - set().union(*(weights.header(f)[1] for f in shards)))
+    if missing:
+        raise SystemExit(f"{len(missing)} tensors flagged in {mirror_file} are not in {model_dir}: {missing[:6]}")
     weights.copy(src, dst_p, set(), set(shards))
 
     # Map deterministic per-tensor seed by sorted flagged name

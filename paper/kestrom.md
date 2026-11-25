@@ -250,8 +250,8 @@ the anti-quantization mirror $W_{\text{mirror}} = 2W - Q(W)$. On Qwen3.5-0.8B (M
 Qwen3.5-4B), official models, an abliterated derivative and a 16-tensor benign fine-tune produced zero flags (max $\rho_1$ 1.0165–1.0243),
 while four box-PGD quantization-conditioned backdoors (16-tensor, 2-tensor conditional stealth, and two 6-tensor adaptive margin/histogram-matched
 attacks) had all 30/30 modified tensors localized with 0/900 false positives ($\rho_1$ 4.91–16.74), exact target-token recovery on
-trigger-free plain text (coherence 12.3–93.5×), and trigger-blind neutralization via `kestrom inspect disarm` (anchor-preserving unbiased
-stochastic rounding on only the flagged tensors, cutting 4-bit attack activation from 24/24 to 0/24—and 1/24 on the histogram-matched
+trigger-free plain text (coherence 12.3–93.5×), and trigger-blind neutralization via `kestrom inspect disarm` (anchor-preserving
+stochastic rounding, unbiased for values inside the quantizer grid, on only the flagged tensors, cutting 4-bit attack activation from 24/24 to 0/24—and 1/24 on the histogram-matched
 model, matching BF16—while surviving subsequent standard 4-bit quantization). An outlier-injection block-collapse test was missed by
 $\rho_1$ and cell-boundary clustering and caught by block collapse (`ge90` 64–65 vs benign max 12).
 

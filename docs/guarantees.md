@@ -81,7 +81,7 @@ quantizes the original alike with llama-quantize, so the other commands compare 
 checks a single FP16/BF16 checkpoint for quantization-conditioned backdoors with no original model and no trigger prompts (MLX affine 4-bit
 group 64 tested; spectral sign-coherence of $Q(W)-W$, cell-boundary clustering, block bin-collapse, and optional behavior-space mirror
 comparison against $2W-Q(W)$ and sign-randomized nulls), and `kestrom inspect disarm` neutralizes only the flagged tensors with
-anchor-preserving unbiased stochastic rounding (checkable with `kestrom-verify diff`). A finding is evidence to read; no finding is not a
+anchor-preserving stochastic rounding, unbiased for values inside the quantizer grid (checkable with `kestrom-verify diff`). A finding is evidence to read; no finding is not a
 proof that the model is clean (`python -m pydoc kestrom.inspect`, `kestrom.mirror`).
 
 ## What is not guaranteed
