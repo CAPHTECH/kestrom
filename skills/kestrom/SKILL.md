@@ -1,6 +1,6 @@
 ---
 name: kestrom
-description: Use Kestrom to edit a language model inside a range and check the edit with kestrom-verify - pick the command for a goal (ban tokens, steer or ban phrases at decoding time, stop thinking loops, edit neurons or heads, merge), run the checks (range, generate, compare, logits, diff, measure), and state what the report does and does not guarantee by tier. Use for any task that runs `kestrom` or `kestrom-verify`, reads their reports, or asks what an edit, a fine-tune or a quantization changed.
+description: Use Kestrom to edit a language model inside a range and check the edit with kestrom-verify - pick the command for a goal (ban tokens, steer or ban phrases at decoding time, stop thinking loops, route compiled fact KV caches, twin-track IFC, edit neurons or heads, merge), run the checks (range, generate, compare, logits, diff, measure), and state what the report does and does not guarantee by tier. Use for any task that runs `kestrom` or `kestrom-verify`, reads their reports, or asks what an edit, a fine-tune or a quantization changed.
 ---
 
 # Using Kestrom
@@ -150,6 +150,17 @@ With the text nearly every output has events from its first thinking position, s
 What to claim: tier 1 for the output before the first event, and the counts you measured. OUT records as `open` the class the answer opens with by the line; no
 check computes that the class is right or that the text after it is true or agrees with it, so read a sample of the reasons where
 events occurred. A class must be spelled in tokens of whole characters, and where other lines ban every token toward it the run stops.
+
+## Compiled fact-KV routing with `kestrom kv`
+
+Use `kestrom kv` when standalone rules should supply specific facts (without placing fact text in the inference prompt) while leaving unmatched prompts untouched.
+
+1. Prepare standalone rules (`RULES.dsl`, verified with `kestrom rules run`, optionally using `prev` lines for multi-turn state) and `FACTS.json`: `{CLASS: TEXT}` for single-head rules, or `[{"key": ..., "when": CLASS | {HEAD: CLASS, ...}, "text": ...}]` for multi-head rules.
+2. Compile the bank once offline: `kestrom kv compile MODEL RULES.dsl FACTS.json OUT_DIR [PREV_DIR]`. At compile time it checks across two probe turns that the chat template places the system turn cleanly before the user turn, compacts trailing slots from linear KV caches, stages into a temporary directory before renaming atomically, and hashes `rules.dsl`, every `.safetensors` cache, and `model_fingerprint` into `manifest.json`. Pass `PREV_DIR` after editing a subset of facts to copy unchanged `(key, prefix_ids)` caches byte-for-byte.
+3. For checked batch decoding (`kestrom generate --rules`), put `kv: OUT_DIR [MAX_MATCH]` in the rules file (`MAX_MATCH` defaults to `1`; values `> 1` compose `2..MAX_MATCH` simultaneous matches on demand via an in-memory LRU `ComposeCache`). Prompts need `"data"` (normalized to match the rules). Any `in ... prompt` conditions in the same rules file are evaluated on the full prompt without the fact KV cache before decoding. Run `kestrom-verify generate mlx` twice on `MODEL` and verify with `kestrom-verify compare events`.
+4. For multi-turn conversations, run `kestrom kv chat MODEL OUT_DIR [MAX_TOKENS] [MAX_MATCH] [TURNS.json] [OUT.jsonl]`. Each turn evaluates the cumulative `steps` history through the bank's `prev` rules, reuses the live KV cache incrementally (`reuse`) while matched keys hold and the chat template remains a strict prefix extension (Gemma 4 E4B), and swaps, composes, or re-prefills (`switch`/`compose`/`rebuild`) when topics change or the template rewrites history (Qwen3.5).
+
+What to claim: the mechanism is cached system-turn KV context, not a weight edit (~1 MB/fact on Gemma 4 E4B, ~10 MB/fact on Qwen3.5 `ArraysCache`). In batch mode, tier 1 `compare events` checks unmatched prompts (where `kv` records no event) up to the first event of another line (`events=[]` and bit-identical when no other line acts), and covers nothing after position `0` on matched prompts (`kv` set, not `null`); neither the accuracy of matched answers nor `kestrom kv chat` (no `compare events` check) is proven by the checker. `model_fingerprint` hashes config/tokenizer files and checks shard file sizes (not full shard bytes).
 
 ## Rules that keep reports valid
 
