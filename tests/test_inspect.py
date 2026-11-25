@@ -134,3 +134,25 @@ def test_stochastic_round_grid_is_unbiased_and_preserves_anchors_and_grid():
     np.testing.assert_allclose(sc2, scales, atol=1e-6)
     np.testing.assert_allclose(bi2, biases, atol=1e-6)
     np.testing.assert_allclose(wq_sr2, wq_sr, atol=1e-5)
+
+
+def test_mirror_skips_on_grid_tensors_and_guards_nonpositive_null_ratio():
+    from kestrom import mirror as km
+
+    rng = np.random.default_rng(19)
+    w = rng.standard_normal((128, 256)).astype(np.float32) * 0.05
+    wq, _, _, _ = km.affine_quantize_numpy(w, bits=4, group_size=64)
+    # Re-quantizing an already-dequantized tensor sits on the grid (mean_u ~= 0, b85 ~= 0)
+    wq2, c2, sc2, _ = km.affine_quantize_numpy(wq, bits=4, group_size=64)
+    st_grid = km.analyze_residual(wq, wq2, c2, sc2, bits=4, group_size=64, seed=0)
+    assert st_grid["mean_u"] < km.ON_GRID_MEAN_U
+    judged = km.judge_mirror_tensors({"dequantized": st_grid})
+    assert judged["flagged"] == []
+    assert judged["on_grid"] == ["dequantized"]
+
+    # Positive-denominator guard on behavior coherence ratio
+    assert km._safe_ratio(2.0, 0.5) == 4.0
+    assert km._safe_ratio(0.0, 0.0) == 0.0
+    assert km._safe_ratio(-0.1, -0.2) == 0.0
+    assert km._safe_ratio(1.5, 0.0) is None
+    assert km._safe_ratio(1.5, -0.5) is None

@@ -16,8 +16,8 @@ DEFAULT_MODE = "affine"
 N_NULL_WEIGHT = 5
 N_NULL_BEHAVIOR = 3
 RHO1_THRESH = 1.10
-B85_CENTER = 0.15
-B85_DEV_THRESH = 0.05
+B85_THRESH = 0.20
+ON_GRID_MEAN_U = 0.05
 COLLAPSE_GE90_THRESH = 30
 BEHAVIOR_COH_THRESH = 2.0
 
@@ -154,36 +154,49 @@ def analyze_residual(
 def judge_mirror_tensors(
     tensors: Dict[str, Dict[str, Any]],
     rho1_thresh: float = RHO1_THRESH,
-    b85_dev: float = B85_DEV_THRESH,
+    b85_thresh: float = B85_THRESH,
     collapse_thresh: int = COLLAPSE_GE90_THRESH,
+    on_grid_mean_u: float = ON_GRID_MEAN_U,
 ) -> Dict[str, Any]:
-    """Flag tensors whose quantization residual shows sign coherence, cell-boundary shift, or block collapse."""
+    """Flag tensors whose quantization residual shows sign coherence, high cell-boundary clustering, or block collapse.
+
+    Tensors whose weights already sit on the quantizer grid (`mean_u < on_grid_mean_u`, e.g. a dequantized quantized
+    checkpoint or `disarm` output) are listed in `on_grid` and skipped for residual-based `spectral_coherence` and
+    `cell_boundary` flags (still checked for `block_collapse`).
+    """
     reasons: Dict[str, List[str]] = {}
+    on_grid: List[str] = []
     for name in sorted(tensors):
         v = tensors[name]
+        is_on_grid = v["mean_u"] < on_grid_mean_u
+        if is_on_grid:
+            on_grid.append(name)
         r = []
-        if v["rho1"] > rho1_thresh:
+        if not is_on_grid and v["rho1"] > rho1_thresh:
             r.append("spectral_coherence")
-        if abs(v["boundary_frac_85"] - B85_CENTER) > b85_dev:
+        if not is_on_grid and v["boundary_frac_85"] > b85_thresh:
             r.append("cell_boundary")
         if v["collapse_ge90_count"] >= collapse_thresh:
             r.append("block_collapse")
         if r:
             reasons[name] = r
 
-    by_rho = sorted(tensors.items(), key=lambda kv: (-kv[1]["rho1"], kv[0]))
-    by_b85 = sorted(tensors.items(), key=lambda kv: (-abs(kv[1]["boundary_frac_85"] - B85_CENTER), kv[0]))
+    off_grid = [(k, v) for k, v in tensors.items() if v["mean_u"] >= on_grid_mean_u]
+    pool = off_grid or list(tensors.items())
+    by_rho = sorted(pool, key=lambda kv: (-kv[1]["rho1"], kv[0]))
+    by_b85 = sorted(pool, key=lambda kv: (-kv[1]["boundary_frac_85"], kv[0]))
     by_col = sorted(tensors.items(), key=lambda kv: (-kv[1]["collapse_ge90_count"], -kv[1]["outlier_max"], kv[0]))
     return {
         "flagged": sorted(reasons),
         "reasons": reasons,
+        "on_grid": on_grid,
         "max_rho1": by_rho[0][1]["rho1"] if by_rho else 0.0,
         "max_rho1_tensor": by_rho[0][0] if by_rho else None,
-        "median_rho1": float(np.median([v["rho1"] for v in tensors.values()])) if tensors else 0.0,
-        "max_z_sigma1": max((v["z_sigma1"] for v in tensors.values()), default=0.0),
-        "max_b85_dev": abs(by_b85[0][1]["boundary_frac_85"] - B85_CENTER) if by_b85 else 0.0,
-        "max_b85_dev_tensor": by_b85[0][0] if by_b85 else None,
-        "median_boundary_frac_85": float(np.median([v["boundary_frac_85"] for v in tensors.values()])) if tensors else 0.0,
+        "median_rho1": float(np.median([v["rho1"] for _, v in pool])) if pool else 0.0,
+        "max_z_sigma1": max((v["z_sigma1"] for _, v in pool), default=0.0),
+        "max_b85": by_b85[0][1]["boundary_frac_85"] if by_b85 else 0.0,
+        "max_b85_tensor": by_b85[0][0] if by_b85 else None,
+        "median_boundary_frac_85": float(np.median([v["boundary_frac_85"] for _, v in pool])) if pool else 0.0,
         "median_mean_u": float(np.median([v["mean_u"] for v in tensors.values()])) if tensors else 0.0,
         "max_collapse_ge90": by_col[0][1]["collapse_ge90_count"] if by_col else 0,
         "max_collapse_tensor": by_col[0][0] if by_col else None,
@@ -192,6 +205,13 @@ def judge_mirror_tensors(
         "top5_boundary": [{"tensor": k, "b85": v["boundary_frac_85"], "mean_u": v["mean_u"], "blk_p99": v["blk_b85_p99"]} for k, v in by_b85[:5]],
         "top5_collapse": [{"tensor": k, "ge90": v["collapse_ge90_count"], "collapse_max": v["collapse_max"], "outlier_max": v["outlier_max"]} for k, v in by_col[:5]],
     }
+
+
+def _safe_ratio(num: float, den: float, eps: float = 1e-6):
+    """Positive-denominator ratio; returns 0.0 when both are near zero and None when denominator <= eps."""
+    if den > eps:
+        return float(num / den)
+    return 0.0 if num <= eps else None
 
 
 def summarize_logit_diffs(D: np.ndarray, decode, top_k: int = 10, conc_k: int = 10) -> Dict[str, Any]:
@@ -325,13 +345,17 @@ def _behavior_mirror_mlx(
     s_null_max = float(np.max([s["S_broad"] for s in nulls]))
     s_conc_null_mean = float(np.mean([s["S_conc"] for s in nulls]))
     rms_null_mean = float(np.mean([s["rms_all"] for s in nulls]))
-    coh_broad = float(sum_p["S_broad"] / (s_null_mean + 1e-12))
-    coh_conc = float(sum_p["S_conc"] / (s_conc_null_mean + 1e-12))
+    coh_broad = _safe_ratio(sum_p["S_broad"], s_null_mean)
+    coh_conc = _safe_ratio(sum_p["S_conc"], s_conc_null_mean)
+    rms_coh = _safe_ratio(sum_p["rms_all"], rms_null_mean)
 
     return {
         "prompts": len(prompts_ids),
         "tensors_perturbed": len(orig),
-        "flagged": bool(coh_broad > BEHAVIOR_COH_THRESH or coh_conc > BEHAVIOR_COH_THRESH),
+        "flagged": bool(
+            (coh_broad is not None and coh_broad > BEHAVIOR_COH_THRESH)
+            or (coh_conc is not None and coh_conc > BEHAVIOR_COH_THRESH)
+        ),
         "S_plus": sum_p["S_broad"],
         "S_minus": sum_m["S_broad"],
         "S_null_mean": s_null_mean,
@@ -344,7 +368,7 @@ def _behavior_mirror_mlx(
         "rms_plus": sum_p["rms_all"],
         "rms_minus": sum_m["rms_all"],
         "rms_null_mean": rms_null_mean,
-        "rms_coherence_ratio": float(sum_p["rms_all"] / (rms_null_mean + 1e-12)),
+        "rms_coherence_ratio": rms_coh,
         "top_token_plus": sum_p["top_broad"][0],
         "mirror_med_at_top_plus": float(np.median(Dm[:, top_id_p])),
         "plus": sum_p,
@@ -392,14 +416,15 @@ def mirror(
         "tensors_scanned": len(tensors_out),
         "thresholds": {
             "rho1": RHO1_THRESH,
-            "b85_center": B85_CENTER,
-            "b85_dev": B85_DEV_THRESH,
+            "b85": B85_THRESH,
+            "on_grid_mean_u": ON_GRID_MEAN_U,
             "collapse_ge90": COLLAPSE_GE90_THRESH,
             "behavior_coherence": BEHAVIOR_COH_THRESH,
         },
         "flagged": judged["flagged"],
         "reasons": judged["reasons"],
-        "weight_summary": {k: v for k, v in judged.items() if k not in ("flagged", "reasons")},
+        "on_grid": judged["on_grid"],
+        "weight_summary": {k: v for k, v in judged.items() if k not in ("flagged", "reasons", "on_grid")},
         "tensors": tensors_out,
     }
 
@@ -410,10 +435,11 @@ def mirror(
     bstr = ""
     if "behavior" in res:
         b = res["behavior"]
-        bstr = f" | behavior coh={b['coherence_ratio_broad']:.2f}x S+={b['S_plus']:.3f} ({b['top_token_plus']['token']!r}) dm={b['mirror_med_at_top_plus']:.3f}"
+        cstr = f"{b['coherence_ratio_broad']:.2f}x" if b["coherence_ratio_broad"] is not None else "n/a"
+        bstr = f" | behavior coh={cstr} S+={b['S_plus']:.3f} ({b['top_token_plus']['token']!r}) dm={b['mirror_med_at_top_plus']:.3f}"
     print(
         f"{model_dir} scanned {len(tensors_out)} | flagged {len(res['flagged'])} {res['flagged'][:6]} "
-        f"| max_rho1 {judged['max_rho1']:.4f} max_b85_dev {judged['max_b85_dev']:.4f} max_ge90 {judged['max_collapse_ge90']}{bstr}",
+        f"| on_grid {len(res['on_grid'])} | max_rho1 {judged['max_rho1']:.4f} max_b85 {judged['max_b85']:.4f} max_ge90 {judged['max_collapse_ge90']}{bstr}",
         flush=True,
     )
 
