@@ -214,3 +214,82 @@ def test_math_helpers():
     x = np.array([100.0, 99.0, 98.0], dtype=np.float32)
     assert kl_divergence(x, x) == pytest.approx(0.0, abs=1e-12)
     assert token_lift(x, x, 0) == pytest.approx(0.0, abs=1e-12)
+
+
+def test_torch_backend_contract_without_torch_installed(monkeypatch):
+    import contextlib
+    import sys
+    import types
+
+    from kestrom.ifc import TorchBackend, _load_backend
+
+    class FakeTensor:
+        def __init__(self, arr):
+            self._arr = np.asarray(arr)
+
+        def __getitem__(self, idx):
+            return FakeTensor(self._arr[idx])
+
+        def float(self):
+            return FakeTensor(self._arr.astype(np.float32))
+
+        def cpu(self):
+            return self
+
+        def numpy(self):
+            return self._arr
+
+    fake_torch = types.SimpleNamespace(
+        long="int64",
+        no_grad=contextlib.nullcontext,
+        tensor=lambda data, dtype=None, device=None: FakeTensor(data),
+    )
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+
+    vocab = ["<eos>", '{"tool":"', "ok", "evil", '","summary":"', "hello", "MASK", '"}']
+
+    class FakeModel:
+        device = "cpu"
+        generation_config = types.SimpleNamespace(eos_token_id=[0])
+
+        def __init__(self):
+            self.calls = []
+
+        def __call__(self, x, past_key_values=None, use_cache=True):
+            ids = x.numpy()[0].tolist()
+            history = list(past_key_values or []) + ids
+            self.calls.append((ids, past_key_values is not None))
+            # Distinguish Track A (prompt starts with 99) from Track B (prompt starts with 88)
+            is_a = history[0] == 99
+            step = len(history) - 2  # 2-token prompt prefix
+            script = (
+                [{1: 9.0}, {3: 9.0, 2: -1.0}, {4: 9.0}, {5: 9.0, 6: -1.0}, {7: 9.0}, {0: 9.0}]
+                if is_a
+                else [{1: 9.0}, {2: 9.0, 3: -1.0}, {4: 9.0}, {6: 9.0, 5: -1.0}, {7: 9.0}, {0: 9.0}]
+            )
+            row = np.zeros((1, len(ids), len(vocab)), dtype=np.float32)
+            for tok_id, val in script[min(step, len(script) - 1)].items():
+                row[0, -1, tok_id] = val
+            return types.SimpleNamespace(logits=FakeTensor(row), past_key_values=tuple(history))
+
+    class FakeTok:
+        eos_token_id = 0
+
+        def decode(self, xs):
+            return "".join(vocab[t] for t in xs)
+
+    model = FakeModel()
+    be = TorchBackend(model, FakeTok())
+    assert be.eos_ids == [0]
+    pol = JsonKeyRegionPolicy(("tool",), ("summary",))
+
+    res_fast = decode_control_fast(be, [99, 10], [88, 10], pol, max_tokens=10)
+    res_audit = decode_control(TorchBackend(FakeModel(), FakeTok()), [99, 10], [88, 10], pol, max_tokens=10)
+    assert res_fast["tokens"] == res_audit["tokens"] == [1, 2, 4, 5, 7]
+    assert res_fast["text"] == '{"tool":"ok","summary":"hello"}'
+    assert res_fast["events"] == res_audit["events"] == [3, 4]
+    # Verify single-call full-prompt prefill (matching kestrom_verify.pt.gen)
+    assert model.calls[0] == ([88, 10], False)
+
+    with pytest.raises(SystemExit):
+        _load_backend("dummy", "unknown")

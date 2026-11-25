@@ -8,7 +8,8 @@ value comes from Track A. `events` records the `summary` (DATA) positions, so `k
 clean Track B checks that every leading control token is bit-identical to a model that never saw the untrusted email (U0 and G2).
 
 ```sh
-sh examples/ifc-control/run.sh QWEN35_4B_FOLDER      # Qwen/Qwen3.5-4B, MLX; ~1 minute
+sh examples/ifc-control/run.sh QWEN35_4B_FOLDER        # Qwen/Qwen3.5-4B, MLX (default); ~1 minute
+sh examples/ifc-control/run.sh QWEN35_4B_FOLDER torch  # PyTorch (CUDA, else MPS, else CPU)
 ```
 
 The script runs three prompts (one benign email and two emails containing prompt injections that try to hijack `tool`, `recipient`

@@ -1,7 +1,7 @@
-"""Twin-track information flow control (IFC) at greedy decoding time (MLX, tier 1). Two tracks of the same model read `ids`
+"""Twin-track information flow control (IFC) at greedy decoding time (MLX or PyTorch, tier 1). Two tracks of the same model read `ids`
 (Track A: full prompt with untrusted or secret context) and `clean_ids` (Track B: same prompt with the untrusted or secret span
-removed or masked). Prefill matches mlx_lm's generate_step bit for bit; no weights change.
-  kestrom ifc control MODEL PROMPTS.json OUT.jsonl CONTROL_KEYS DATA_KEYS [MAX_TOKENS] [MODE] [ISOLATE_B]
+removed or masked). Prefill matches mlx_lm's generate_step (for `mlx`) or kestrom_verify.pt.gen (for `torch`) bit for bit; no weights change.
+  kestrom ifc control MODEL PROMPTS.json OUT.jsonl CONTROL_KEYS DATA_KEYS [MAX_TOKENS] [MODE] [ISOLATE_B] [RUNTIME]
                                                         JSON control-flow non-interference. Structural JSON syntax and values of
                                                         CONTROL_KEYS (comma-separated) come strictly from Track B; values of
                                                         DATA_KEYS come from Track A, clamping any single token that crosses back
@@ -13,8 +13,10 @@ removed or masked). Prefill matches mlx_lm's generate_step bit for bit; no weigh
                                                         in one chunked prefill at region boundaries for ~1.0x decode speed) or
                                                         `audit` (lockstep two-track: runs both tracks every step and logs every
                                                         `control_override` with `kl_ab` and `lift_a` in `detail`). With ISOLATE_B
-                                                        (a token id), Track B ingests that neutral token during DATA spans.
-  kestrom ifc firewall MODEL PROMPTS.json OUT.jsonl [MODE] [TAU] [MAX_TOKENS]
+                                                        (a token id, or `none`), Track B ingests that neutral token during DATA spans.
+                                                        RUNTIME is `mlx` (default, Apple Silicon) or `torch` (PyTorch/transformers:
+                                                        CUDA, else MPS, else CPU).
+  kestrom ifc firewall MODEL PROMPTS.json OUT.jsonl [MODE] [TAU] [MAX_TOKENS] [RUNTIME]
                                                         Semantic secret leakage firewall. MODE is `strict-public` (default) or
                                                         `gated-public`; TAU is the log-probability lift threshold in nats (2.0).
                                                         `strict-public` emits Track B everywhere in public spans with `events=[]`,
@@ -25,6 +27,7 @@ removed or masked). Prefill matches mlx_lm's generate_step bit for bit; no weigh
                                                         case it falls back to Track B and records the position in `events` and
                                                         `detail` (`leak_blocked`); compare against two runs of unprotected Track A
                                                         with `kestrom-verify compare events` to check G2 up to the first block.
+                                                        RUNTIME is `mlx` (default) or `torch`.
 PROMPTS.json: a JSON list of {"id": ..., "ids": [Track A ids], "clean_ids": [Track B ids], other keys kept}."""
 from dataclasses import dataclass
 import json
@@ -592,16 +595,93 @@ class MLXBackend:
         return np.array(lb.astype(mx.float32))
 
 
+class TorchBackend:
+    """Sequential Batch=1 PyTorch (transformers) twin-track backend matching kestrom_verify.pt.gen bit for bit."""
+
+    def __init__(self, model: Any, tok: Any):
+        self.model = model
+        self.tok = tok
+        eos = getattr(getattr(model, "generation_config", None), "eos_token_id", None)
+        self._eos: List[int] = sorted(
+            ({eos} if isinstance(eos, int) else set(eos or ())) | ({getattr(tok, "eos_token_id", None)} - {None})
+        )
+        self._cache_a: Any = None
+        self._cache_b: Any = None
+        self._ids_a: List[int] = []
+        self._ids_b: List[int] = []
+
+    @property
+    def eos_ids(self) -> Sequence[int]:
+        return self._eos
+
+    def decode(self, tokens: Sequence[int]) -> str:
+        return self.tok.decode(list(tokens))
+
+    def _advance_cache(self, ids: Sequence[int], cache: Any) -> Tuple[Any, np.ndarray]:
+        import torch
+
+        with torch.no_grad():
+            x = torch.tensor([list(ids)], dtype=torch.long, device=self.model.device)
+            out = self.model(x, past_key_values=cache, use_cache=True)
+            logits = out.logits[0, -1].float().cpu().numpy()
+        return out.past_key_values, np.asarray(logits, dtype=np.float32)
+
+    def prefill(self, ids_a: Sequence[int], ids_b: Sequence[int]) -> Tuple[np.ndarray, np.ndarray]:
+        self._cache_a, la = self._advance_cache(ids_a, None)
+        self._cache_b, lb = self._advance_cache(ids_b, None)
+        return la, lb
+
+    def step(self, tok_a: int, tok_b: int) -> Tuple[np.ndarray, np.ndarray]:
+        self._cache_a, la = self._advance_cache([tok_a], self._cache_a)
+        self._cache_b, lb = self._advance_cache([tok_b], self._cache_b)
+        return la, lb
+
+    def start_lazy(self, ids_a: Sequence[int], ids_b: Sequence[int]) -> None:
+        self._cache_a = None
+        self._cache_b = None
+        self._ids_a = list(ids_a)
+        self._ids_b = list(ids_b)
+
+    def logits_a(self, pending_a: Sequence[int]) -> np.ndarray:
+        if self._cache_a is None:
+            self._cache_a, la = self._advance_cache(self._ids_a + list(pending_a), None)
+        else:
+            self._cache_a, la = self._advance_cache(pending_a, self._cache_a)
+        return la
+
+    def logits_b(self, pending_b: Sequence[int]) -> np.ndarray:
+        if self._cache_b is None:
+            self._cache_b, lb = self._advance_cache(self._ids_b + list(pending_b), None)
+        else:
+            self._cache_b, lb = self._advance_cache(pending_b, self._cache_b)
+        return lb
+
+
+def _load_backend(model_dir: Any, runtime: str) -> Any:
+    rt = str(runtime)
+    if rt == "mlx":
+        from mlx_lm import load
+
+        model, tok = load(str(model_dir))
+        return MLXBackend(model, tok)
+    if rt == "torch":
+        from kestrom_verify import pt
+        from transformers import AutoTokenizer
+
+        model = pt.load(model_dir)
+        tok = AutoTokenizer.from_pretrained(str(model_dir))
+        return TorchBackend(model, tok)
+    raise SystemExit(f"RUNTIME is mlx or torch, not {rt!r}")
+
+
 def _row(prompt: Dict[str, Any], res: Dict[str, Any]) -> Dict[str, Any]:
     out = {k: v for k, v in prompt.items() if k not in ("ids", "clean_ids")}
     out.update(res)
     return out
 
 
-def control(model_dir, prompts_file, out, control_keys, data_keys, max_tokens=report.MAX_TOKENS, mode="fast", isolate_b=None):
+def control(model_dir, prompts_file, out, control_keys, data_keys, max_tokens=report.MAX_TOKENS, mode="fast", isolate_b=None, runtime="mlx"):
     """Run `kestrom ifc control` on PROMPTS.json and write OUT.jsonl."""
-    from mlx_lm import load
-
     mode = str(mode)
     if mode not in ("fast", "audit"):
         raise SystemExit(f"MODE is fast or audit, not {mode!r}")
@@ -609,8 +689,7 @@ def control(model_dir, prompts_file, out, control_keys, data_keys, max_tokens=re
     dkeys = [k.strip() for k in str(data_keys).split(",") if k.strip()]
     iso = None if isolate_b in (None, "", "none") else int(isolate_b)
     policy = JsonKeyRegionPolicy(ckeys, dkeys)
-    model, tok = load(str(model_dir))
-    backend = MLXBackend(model, tok)
+    backend = _load_backend(model_dir, runtime)
     runner = decode_control_fast if mode == "fast" else decode_control
     with open(out, "w", encoding="utf-8") as f:
         for x in report.read(prompts_file):
@@ -621,13 +700,10 @@ def control(model_dir, prompts_file, out, control_keys, data_keys, max_tokens=re
             print(x["id"], res["finish"], len(res["tokens"]), "events", len(res["events"]), "overrides", res["ifc"]["control_overrides"], flush=True)
 
 
-def firewall(model_dir, prompts_file, out, mode="strict-public", tau=2.0, max_tokens=report.MAX_TOKENS):
+def firewall(model_dir, prompts_file, out, mode="strict-public", tau=2.0, max_tokens=report.MAX_TOKENS, runtime="mlx"):
     """Run `kestrom ifc firewall` on PROMPTS.json and write OUT.jsonl."""
-    from mlx_lm import load
-
     policy = PublicRegionPolicy(mode=str(mode), tau=float(tau))
-    model, tok = load(str(model_dir))
-    backend = MLXBackend(model, tok)
+    backend = _load_backend(model_dir, runtime)
     with open(out, "w", encoding="utf-8") as f:
         for x in report.read(prompts_file):
             res = decode_firewall(backend, x["ids"], x["clean_ids"], policy, int(max_tokens))
