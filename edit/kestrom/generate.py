@@ -5,11 +5,12 @@ original's, so check it with kestrom-verify compare events against two runs of t
   kestrom generate MODEL PROMPTS.json OUT.jsonl [--rules RULES.dsl|FIT.npz] [--max-tokens N]
   --rules       the rules: a .dsl file, or a fit of kestrom rules fit when they read probed features
   --max-tokens  the longest output (512 unless given)
-PROMPTS: a JSON list of {"ids": prompt ids, "data" (with an open line: what its rules read), other keys kept}. OUT: per prompt, the keys of the prompt, finish (stop or length),
+PROMPTS: a JSON list of {"ids": prompt ids, "data" (with an open or kv line: what its rules read), other keys kept}. OUT: per prompt, the keys of the prompt, finish (stop or length),
 the tokens without the stop token, text, events (sorted positions) and detail (each backtrack: kind, phrase or loop, position,
 kept: whether the final output kept the tokens before it; a phrase also string and banned, the token banned, null with gave_up
-when it gave up), and with an open line open (the class the answer opens with by that line, null where the rules answered none
-and the line gives no class, the answer was left alone, the thinking did not end or the answer was cut short of it)."""
+when it gave up), with an open line open (the class the answer opens with by that line, null where the rules answered none
+and the line gives no class, the answer was left alone, the thinking did not end or the answer was cut short of it), and with a kv line
+kv (the matched bank entry key, a list of keys when MAX_MATCH > 1 matches several, or null where no entry matched)."""
 import argparse
 import json
 
@@ -17,7 +18,7 @@ import numpy as np
 
 from kestrom_verify import report
 
-from . import loopguard, rules
+from . import kv, loopguard, rules
 
 MAX_PER_POSITION = 20  # backtracks for a phrase at one position before giving up there
 
@@ -138,8 +139,8 @@ def acted(record, p, end, prefill=False):
     return {p + j for j, f in enumerate(steps) if f and p + j < end} | ({p} if prefill and p < end and any(bool(f) for n, f in record if n > 1) else set())
 
 
-def decode(model, tok, ids, max_tokens, phrases=(), window=None, think_end=None, opening=None, think_start=None):
-    """Greedy with the rules of rules.SIDE on the model and the watching edits given here (phrases, loopguard, opening). Returns the tokens,
+def decode(model, tok, ids, max_tokens, phrases=(), window=None, think_end=None, opening=None, think_start=None, cache_fn=None):
+    """Greedy with the rules of rules.SIDE on the model and the watching edits given here (phrases, loopguard, opening, cache_fn). Returns the tokens,
     the finish, the positions where an edit acted in the final output, and the backtracks."""
     import mlx.core as mx
     from mlx_lm.generate import generate_step
@@ -153,7 +154,8 @@ def decode(model, tok, ids, max_tokens, phrases=(), window=None, think_end=None,
         rules.restart(len(ids))
         spelled = []
         procs = processors(toks, sorted(bans.get(p, ())), copy_found, think_end, tok, opening, spelled, think, thinking0)
-        step = generate_step(mx.array(ids + toks), model, max_tokens=max_tokens - p, logits_processors=procs or None)
+        prompt_cache = cache_fn() if cache_fn is not None else None
+        step = generate_step(mx.array(ids + toks), model, max_tokens=max_tokens - p, logits_processors=procs or None, prompt_cache=prompt_cache)
         done = len(tok.decode(toks)) if phrases else 0  # an occurrence counts once its end is past the text checked so far
         back, finish = None, "length"
         for t, _ in step:
@@ -187,6 +189,8 @@ def decode(model, tok, ids, max_tokens, phrases=(), window=None, think_end=None,
         end = back if back is not None else len(toks) + (finish == "stop")
         fired = {j for j in fired if j < end} | acted(rules.SIDE["record"], p, end) | acted(rules.SIDE["record_add"], p, end, True) | {j for j in spelled if j < end}
         if back is None:
+            if cache_fn is not None:
+                fired.add(0)
             return toks, finish, fired, detail
         del toks[back:]
         if copies is not None and not copy_found:
@@ -199,7 +203,10 @@ def run(model_dir, prompts_file, out, max_tokens=report.MAX_TOKENS, rules_file=N
     rules.SIDE.clear()
     if rules_file:
         rules.SIDE.update(rules.load(rules_file, tok))
+        if rules.SIDE["kv"]:
+            kv.check_model(rules.SIDE["kv"][0], model_dir)
         rules.attach(model)
+    compose_cache = kv.ComposeCache() if rules.SIDE.get("kv") else None
     think_end = tok.convert_tokens_to_ids(loopguard.THINK_END) if loopguard.THINK_END in tok.get_vocab() else None
     think_start = tok.convert_tokens_to_ids("<think>") if "<think>" in tok.get_vocab() else None
     with open(out, "w", encoding="utf-8") as f:  # one line per prompt as it is done (a long run keeps what it finished)
@@ -207,7 +214,15 @@ def run(model_dir, prompts_file, out, max_tokens=report.MAX_TOKENS, rules_file=N
             if rules_file:
                 rules.start(model, x["ids"])
             opening = rules.opening(x)
-            toks, finish, fired, detail = decode(model, tok, x["ids"], int(max_tokens), rules.SIDE.get("phrases", ()), rules.SIDE.get("window"), think_end, opening, think_start)
+            kv_hit = rules.kv_for(x, x["ids"]) if rules_file else None
+            if kv_hit is not None:
+                kv_key, kv_entries, strip_prefix = kv_hit
+                bank = rules.SIDE["kv"][0]
+                feed_ids = x["ids"][len(strip_prefix):]
+                cache_fn = lambda entries=kv_entries, b=bank: compose_cache.get_or_build(model, tok, b, entries)  # noqa: E731
+            else:
+                kv_key, feed_ids, cache_fn = None, x["ids"], None
+            toks, finish, fired, detail = decode(model, tok, feed_ids, int(max_tokens), rules.SIDE.get("phrases", ()), rules.SIDE.get("window"), think_end, opening, think_start, cache_fn)
             for e in detail:
                 e["kept"] = toks[:e["position"]] == e.pop("prefix")
             events = sorted(fired | {e["position"] for e in detail})
@@ -215,6 +230,8 @@ def run(model_dir, prompts_file, out, max_tokens=report.MAX_TOKENS, rules_file=N
             if rules.SIDE.get("open"):
                 thinking, part = answer(tok, toks, (think_start, think_end), answer(tok, x["ids"], (think_start, think_end))[0])
                 row["open"] = opening[0][:-1] if opening and not thinking and tok.decode(part).startswith(opening[0]) else None
+            if rules.SIDE.get("kv"):
+                row["kv"] = kv_key
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
             f.flush()
             print(x["id"], finish, len(toks), "events", len(events), flush=True)
