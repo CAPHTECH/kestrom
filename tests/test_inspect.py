@@ -156,3 +156,108 @@ def test_mirror_skips_on_grid_tensors_and_guards_nonpositive_null_ratio():
     assert km._safe_ratio(-0.1, -0.2) == 0.0
     assert km._safe_ratio(1.5, 0.0) is None
     assert km._safe_ratio(1.5, -0.5) is None
+
+
+def test_mirror_nf4_benign_coherent_outlier_and_on_grid():
+    from kestrom import mirror as km
+
+    rng = np.random.default_rng(23)
+    w_benign = rng.standard_normal((128, 256)).astype(np.float32) * 0.05
+    wq_b, c_b, am_b = km.nf4_quantize_numpy(w_benign, group_size=64)
+    st_benign = km.analyze_residual(w_benign, wq_b, c_b, am_b, bits=4, group_size=64, seed=0, levels=km.NF4_LEVELS)
+    assert 0.90 <= st_benign["rho1"] <= 1.10
+    assert 0.40 <= st_benign["mean_u"] <= 0.60
+    assert st_benign["boundary_frac_85"] <= 0.20
+
+    # Coherent low-rank shift hidden strictly inside NF4 Voronoi boxes (|e| <= 0.03 * absmax)
+    u_vec = rng.standard_normal((128, 1)).astype(np.float32)
+    v_vec = rng.standard_normal((1, 256)).astype(np.float32)
+    sign_rank1 = np.sign(u_vec @ v_vec)
+    am_full = np.repeat(am_b, 64, axis=1)
+    wg_b = w_benign.reshape(128, 4, 64)
+    w_adv = wq_b - 0.025 * am_full * sign_rank1
+    anchors = np.abs(wg_b) == am_b[:, :, None]
+    w_adv = np.where(anchors, wg_b, w_adv.reshape(128, 4, 64)).reshape(128, 256).astype(np.float32)
+    wq_a, c_a, am_a = km.nf4_quantize_numpy(w_adv, group_size=64)
+    st_adv = km.analyze_residual(w_adv, wq_a, c_a, am_a, bits=4, group_size=64, seed=0, levels=km.NF4_LEVELS)
+    assert st_adv["rho1"] > 2.0
+
+    # Outlier block collapse under NF4
+    w_out = w_benign.copy().reshape(128, 4, 64)
+    for r in range(40):
+        w_out[r, 0, 0] = 50.0 * float(np.max(np.abs(w_out[r, 0])))
+    w_out = w_out.reshape(128, 256)
+    wq_o, c_o, am_o = km.nf4_quantize_numpy(w_out, group_size=64)
+    st_out = km.analyze_residual(w_out, wq_o, c_o, am_o, bits=4, group_size=64, seed=0, levels=km.NF4_LEVELS)
+    assert st_out["collapse_ge90_count"] >= 30
+
+    judged = km.judge_mirror_tensors({"benign": st_benign, "adv": st_adv, "outlier": st_out})
+    assert judged["flagged"] == ["adv", "outlier"]
+    assert "spectral_coherence" in judged["reasons"]["adv"]
+    assert "block_collapse" in judged["reasons"]["outlier"]
+
+    # Unbiased NF4 stochastic rounding preserves absmax anchors and puts weights back on the NF4 grid
+    acc = np.zeros_like(w_benign, dtype=np.float64)
+    for s in range(400):
+        acc += km.stochastic_round_nf4(w_benign, am_b, group_size=64, seed=s)
+    mean_sr = acc / 400.0
+    assert abs(float(np.mean(mean_sr - w_benign))) < 3e-4
+    np.testing.assert_allclose(mean_sr, w_benign, atol=6e-3)
+    wq_sr = km.stochastic_round_nf4(w_benign, am_b, group_size=64, seed=5)
+    wq_sr2, c_sr2, am_sr2 = km.nf4_quantize_numpy(wq_sr, group_size=64)
+    np.testing.assert_allclose(am_sr2, am_b, atol=1e-6)
+    np.testing.assert_allclose(wq_sr2, wq_sr, atol=1e-6)
+    st_grid = km.analyze_residual(wq_sr, wq_sr2, c_sr2, am_sr2, bits=4, group_size=64, seed=0, levels=km.NF4_LEVELS)
+    assert st_grid["mean_u"] < km.ON_GRID_MEAN_U
+
+
+def test_mirror_weight_only_and_disarm_nf4_on_synthetic_safetensors(tmp_path):
+    from kestrom import mirror as km
+    from kestrom_verify import weights
+
+    def to_bf16_u16(x: np.ndarray) -> np.ndarray:
+        u32 = np.ascontiguousarray(x, dtype=np.float32).view(np.uint32)
+        return ((u32 + np.uint32(0x7FFF) + ((u32 >> 16) & np.uint32(1))) >> 16).astype(np.uint16)
+
+    rng = np.random.default_rng(31)
+    w_clean = (rng.standard_normal((128, 256)) * 0.05).astype(np.float32)
+    w_base = (rng.standard_normal((128, 256)) * 0.05).astype(np.float32)
+    wq_b, _, am_b = km.nf4_quantize_numpy(w_base, group_size=64)
+    sign_r1 = np.sign(rng.standard_normal((128, 1)) @ rng.standard_normal((1, 256))).astype(np.float32)
+    wg_b = w_base.reshape(128, 4, 64)
+    w_adv = np.where(
+        np.abs(wg_b) == am_b[:, :, None],
+        wg_b,
+        (wq_b - 0.025 * np.repeat(am_b, 64, axis=1) * sign_r1).reshape(128, 4, 64),
+    ).reshape(128, 256).astype(np.float32)
+
+    lm_head = (rng.standard_normal((8, 64)) * 0.05).astype(np.float32)
+    src = folder(
+        tmp_path / "src",
+        {
+            "model.layers.0.mlp.down_proj.weight": to_bf16_u16(w_clean),
+            "model.layers.1.mlp.down_proj.weight": to_bf16_u16(w_adv),
+            "lm_head.weight": to_bf16_u16(lm_head),
+        },
+        shards=[["model.layers.0.mlp.down_proj.weight", "lm_head.weight"], ["model.layers.1.mlp.down_proj.weight"]],
+    )
+
+    out1, out2 = tmp_path / "r1.json", tmp_path / "r2.json"
+    km.mirror(str(src), str(out1), mode="nf4")
+    km.mirror(str(src), str(out2), mode="nf4")
+    assert out1.read_bytes() == out2.read_bytes()
+    rep = json.loads(out1.read_text(encoding="utf-8"))
+    assert rep["quantizer"] == {"mode": "nf4", "bits": 4, "group": 64, "runtime": "torch"}
+    assert rep["flagged"] == ["model.layers.1.mlp.down_proj.weight"]
+
+    dst = tmp_path / "disarmed"
+    km.disarm(str(src), str(out1), str(dst), seed=7)
+    d = weights.diff(src, dst)
+    assert "model-0.safetensors" not in d["weights"]["files not equal"]
+    assert d["weights"]["changed rows"] == []
+
+    out_after = tmp_path / "after.json"
+    km.mirror(str(dst), str(out_after), mode="nf4")
+    rep_after = json.loads(out_after.read_text(encoding="utf-8"))
+    assert rep_after["flagged"] == []
+    assert "model.layers.1.mlp.down_proj.weight" in rep_after["on_grid"]
