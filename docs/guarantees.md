@@ -39,7 +39,7 @@ not that a loop or a condition was really there.
 - **An inference-time edit** (`kestrom generate`, `kestrom ifc`): the weights do not change. Each output records its events, the
   output positions where an edit acted (conditional steering: position 0 when the condition fires; rules: every position where a
   rule fired; a phrase ban: the start of the phrase it went back to; the loop guard: the start of the first loop; an `open` line: every
-  position where it took another token than the top one; `kestrom ifc control`: the declared `DATA` positions, compared against two runs
+  position where it took another token than the top one; a `kv` line: position 0 where a compiled fact KV cache is injected, and empty `events` where no fact uniquely matched; `kestrom ifc control`: the declared `DATA` positions, compared against two runs
   of clean Track B (both `fast` single-track lazy switching and `audit` two-track modes give the same G2 check); `kestrom ifc firewall --mode strict-public`: empty `events`, compared against clean Track B; `kestrom ifc firewall --mode gated-public`:
   every position where a high-lift token was blocked, compared against unprotected Track A). Before the first
   event the decoding is the reference track's, so the output first differs at or after it (G2 with the range `events`).
@@ -100,6 +100,7 @@ proof that the model is clean (`python -m pydoc kestrom.inspect`, `kestrom.mirro
   or the line gives a class (whatever the prompt asks): the
   events then begin at the first thinking positions, so G2 covers almost nothing of such an output, and nothing checks that the model
   uses the text or that its thinking ends.
+- That a compiled fact cache injected by a `kv` line produces a true or well-grounded answer, or that the chat template isolates system context cleanly on untested models (`prefix_boundary` checks system-prefix equivalence across two probe turns at compile time). Where a `kv` line injects a cache, event `0` is recorded so `compare events` verifies exact bit-identical outputs on unmatched prompts (`events=[]`) and checks nothing after position `0` on matched ones. OUT records `kv` as the matched entry key or `null`.
 - Anything about `kestrom rules run`, `kestrom rules build` and `kestrom rules weigh`: they edit no model and have no tier. They show the rules' answers on
   the inputs given.
 - With `kestrom ifc`: that the prompt split between `ids` and `clean_ids` or the choice of control/data keys is right. Strict prefix
@@ -136,4 +137,4 @@ twice.
 
 Inputs: `PROMPTS.json` is `[{"id": ..., "ids": [prompt token ids]}, ...]`; `INPUTS.json` adds the answer tokens as `"tokens"`. Other
 keys are copied to the outputs. A generation (JSONL) has `id`, `finish` (`stop` or `length`), `tokens` (without the stop token) and
-`text`; an inference-time edit adds `events` and `detail`, and with an `open` line `open` (`python -m pydoc kestrom.generate`).
+`text`; an inference-time edit adds `events` and `detail`, with an `open` line `open`, and with a `kv` line `kv` (`python -m pydoc kestrom.generate`, `kestrom.kv`).

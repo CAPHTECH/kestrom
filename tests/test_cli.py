@@ -5,12 +5,14 @@ import pytest
 
 import kestrom.__main__ as k
 import kestrom_verify.__main__ as v
-from kestrom import ifc, inspect, rows
+from kestrom import ifc, inspect, kv, rows
 from kestrom_verify import call
 
 
 @pytest.mark.parametrize("argv, cli, doc", [
     ([], k, k.__doc__), (["--help"], k, k.__doc__), (["nope"], k, k.__doc__),
+    (["kv"], k, kv.__doc__), (["kv", "--help"], k, kv.__doc__), (["kv", "nope"], k, kv.__doc__),
+    (["kv", "compile"], k, kv.__doc__),
     (["ifc"], k, ifc.__doc__), (["ifc", "--help"], k, ifc.__doc__), (["ifc", "nope"], k, ifc.__doc__),
     (["ifc", "control"], k, ifc.__doc__), (["ifc", "firewall"], k, ifc.__doc__),
     (["inspect"], k, inspect.__doc__), (["inspect", "--help"], k, inspect.__doc__), (["inspect", "nope"], k, inspect.__doc__),

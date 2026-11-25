@@ -96,10 +96,16 @@ a name in an h1 line: declared by an `in` line, or else read by a probe (by run,
                                              was left alone, the thinking did not end, or --max-tokens cut the answer short of it);
                                              the tokenizer must spell it, and TEXT, in tokens of whole characters, and where the
                                              other lines ban every token that goes on toward it the run stops. One open line at most
+  kv: BANK_DIR                               compiled fact-KV routing (python -m pydoc kestrom.kv): evaluates the KV bank's rules on
+                                             each prompt's "data". Where an entry uniquely matches, injects its compiled prefix KV
+                                             cache, feeds only the prompt tokens after the shared prefix (zero knowledge text in the
+                                             prompt), and records event 0; otherwise no cache is injected and the prompt runs
+                                             unchanged. OUT records "kv" as the matched entry key or null. One kv line at most
 """
 import ast
 import json
 import operator
+from pathlib import Path
 import re
 
 import numpy as np
@@ -115,7 +121,7 @@ K = 4.0  # the scale of the out lines and the margin of the moves, unless a fit 
 TERM = re.compile(r"([+-]?)\s*(?:(\d+(?:\.\d+)?)\s*\*\s*)?([A-Za-z_][\w.]*)")
 CODE = re.compile(r'(?:[^"#]|"(?:[^"\\]|\\.)*")*')  # a line up to a # outside double quotes
 HEAD = re.compile(r'((?:[^":]|"(?:[^"\\]|\\.)*")*):')  # the head: up to the first : outside double quotes
-KINDS = ("in", "h1", "h2", "out", "move", "ban", "add", "phrase", "loopguard", "set", "open")
+KINDS = ("in", "h1", "h2", "out", "move", "ban", "add", "phrase", "loopguard", "set", "open", "kv")
 
 
 def lines(text):
@@ -261,6 +267,9 @@ def compile_rules(text, units=UNITS):
     opens = [(rest, m.group(1), m.group(2), m.group(3) and text_of(m.group(3))) for rest, m in opens]
     if any(text is not None and not text[:1].strip() for *_, text in opens):
         raise ValueError("the TEXT of an open line begins with a character that is not white space")
+    kvs = [(rest, body) for kind, rest, body in L if kind == "kv"]
+    if len(kvs) > 1 or any(rest or len(body.split()) != 1 for rest, body in kvs):
+        raise ValueError("one kv line at most, `kv: BANK_DIR`")
     sets = []
     for kind, rest, body in L:
         if kind == "set":
@@ -295,7 +304,7 @@ def compile_rules(text, units=UNITS):
     used = sorted(set(np.flatnonzero(net["W3"].any(1)).tolist()) | {u for _, _, u in moves} | {u for _, u in bans})
     return dict(inputs=inputs, declared=declared, tokens=tokens, moves=moves, bans=bans, adds=adds, phrases=phrases,
                 window=(int(loops[0]) if loops[0] else WINDOW) if loops else None, used=used, units=h2n, sets=sets, net=net,
-                open=opens[0] if opens else None)
+                open=opens[0] if opens else None, kv=kvs[0][1] if kvs else None)
 
 
 def unit_values(net, x, xp=np):
@@ -323,7 +332,7 @@ def standalone(rules_file):
     R["heads"] = {}
     for i, c in enumerate(R["tokens"]):
         R["heads"].setdefault(c.split("/", 1)[0] if "/" in c else "", []).append(i)
-    if R["moves"] or R["bans"] or R["adds"] or R["phrases"] or R["window"] is not None or R["open"] or not R["tokens"] or any(
+    if R["moves"] or R["bans"] or R["adds"] or R["phrases"] or R["window"] is not None or R["open"] or R["kv"] or not R["tokens"] or any(
             s[0] not in STANDALONE or (s[0] == "prev" and s[1] not in R["units"]) for s in R["declared"].values()) or any(
             name in R["declared"] or any(t not in R["inputs"] + R["registers"] for t in names_of(e)) for name, e, _ in R["sets"]):
         raise SystemExit(f"run, build and weigh read in lines of {', '.join(STANDALONE)} (prev of an h2 unit), h1, h2, out and set lines only (a set "
@@ -538,6 +547,23 @@ def opening(x):
     return None if c is None else (c + "\n", starts, text.replace("{}", c) + "\n" if text else None)
 
 
+def kv_for(x, ids):
+    """What a `kv` line injects for prompt x: (entry key, safetensors cache path, strip_prefix), or None without a `kv` line or a unique match."""
+    if not SIDE.get("kv"):
+        return None
+    if "data" not in x:
+        raise SystemExit(f"prompt {x.get('id')}: a kv line reads the prompt's \"data\"")
+    from . import kv
+    bank = SIDE["kv"]
+    entry = kv.match_entry(bank, x["data"])
+    if entry is None:
+        return None
+    sp = bank["strip_prefix"]
+    if list(ids[:len(sp)]) != sp:
+        raise SystemExit(f"prompt {x.get('id')}: prompt ids do not start with bank strip_prefix {sp}")
+    return entry["key"], str(Path(bank["dir"]) / entry["file"]), sp
+
+
 def model_rules(text):
     """compile_rules, for the commands that run a model: the in lines of STANDALONE and set lines are for run, build and weigh."""
     R = compile_rules(text)
@@ -562,6 +588,9 @@ def load(path, tok):
         R["open"] = (standalone(file), head, *rest)
         if list(R["open"][0]["heads"]) != [""] if not head else head not in R["open"][0]["heads"]:
             raise SystemExit(f"the open line names a head of {file} (none when none of its classes has a head): {head!r}")
+    if R["kv"]:
+        from . import kv
+        R["kv"] = kv.load_bank(R["kv"], tok)
     import mlx.core as mx
     moves = R["moves"]
     vectors = {}
