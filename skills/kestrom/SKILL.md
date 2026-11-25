@@ -46,6 +46,7 @@ Never state a guarantee no check computed. If U0 fails, G1 and G2 in that report
 | Merge weights | `kestrom merge A B C LAMBDA DST` | `measure`, `diff` |
 | What a received model changed | — | `diff` (with the declaration if one was given), `measure` (`examples/acceptance-report`); for a claimed LoRA or QLoRA, `kestrom inspect quant` and `kestrom inspect shape` (rank against the claim); for a Qwen3.5 GGUF file, `kestrom inspect gguf` first (Q4_K_M tested) |
 | Look for a backdoor in a delivered fine-tune | `kestrom inspect` | see the `kestrom-acceptance` skill |
+| Check a single checkpoint (no original model, no trigger) for quantization-conditioned backdoors and disarm flagged tensors | `kestrom inspect mirror`, then `kestrom inspect disarm` | `kestrom-verify diff` on the disarmed copy (tier 3: evidence only, no guarantee) |
 
 A ban is of tokens, not characters: `kestrom rows ban` matches a string inside every token that holds it, also inside correct
 words, and byte-level tokens can still spell the string (in Qwen3.5, 的 as token 95725 then 226). To keep a string out, use a

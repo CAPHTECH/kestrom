@@ -26,11 +26,11 @@
                                                         edits inside decoder layers (tier 2)
   train sft-data GENERATED.jsonl OUT_DIR                fine-tuning data from the outputs (tier 3: no guarantee)
   merge A B C LAMBDA DST                                weight arithmetic, A + LAMBDA (B - C) (tier 3)
-  inspect {quant, base, shape, lens, behavior, trigger, gguf} ...
-                                                        look for a backdoor in a delivered fine-tune (reads; base and gguf write a folder; tier 3)
+  inspect {quant, base, shape, lens, behavior, trigger, gguf, mirror, disarm} ...
+                                                        look for a backdoor in a delivered fine-tune (reads; base, gguf and disarm write a folder; tier 3)
 kestrom COMMAND --help prints the help of its module; every module's docstring has the details (python -m pydoc kestrom.generate, kestrom.ifc, kestrom.rules, kestrom.steer, kestrom.loopguard,
 kestrom.rows, kestrom.trigger, kestrom.find, kestrom.mlp,
-kestrom.units, kestrom.train, kestrom.inspect)."""
+kestrom.units, kestrom.train, kestrom.inspect, kestrom.mirror)."""
 import importlib
 import sys
 
@@ -45,7 +45,8 @@ COMMANDS = {"generate": ("generate", "main"), "ifc": ("ifc", {"control": "contro
             "edit": ("units", {"neuron-gain": "neuron_gain", "head-gain": "head_gain", "head-proj": "head_proj", "subtract": "subtract",
                                "keyed": "keyed", "neuron-write": "neuron_write"}),
             "train": ("train", {"sft-data": "sft_data"}), "merge": ("train", "merge"),
-            "inspect": ("inspect", {k: k for k in ("quant", "base", "shape", "lens", "behavior", "trigger", "gguf")})}
+            "inspect": ("inspect", {**{k: k for k in ("quant", "base", "shape", "lens", "behavior", "trigger", "gguf")},
+                                    "mirror": "mirror:mirror", "disarm": "mirror:disarm"})}
 
 
 def module(name):

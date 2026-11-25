@@ -77,8 +77,12 @@ tensor, with its singular values when its shorter side is at least 32, and flags
 tokens a tensor's change makes the model say. `behavior` compares the model with fine-tunes you retrain from the declaration with
 other seeds (the mean of several); run it also on each retraining against the others, to see how much the seed alone moves. `trigger` sweeps 25,000 words for the ones
 that raise a given token. `gguf` reads a model received as one GGUF file of Qwen3.5 back into the original's tensor names and
-quantizes the original alike with llama-quantize, so the other commands compare the two (tested with Q4_K_M only). A finding is evidence to read; no finding is not a proof that the model is clean (`python -m pydoc
-kestrom.inspect`).
+quantizes the original alike with llama-quantize, so the other commands compare the two (tested with Q4_K_M only). `kestrom inspect mirror`
+checks a single FP16/BF16 checkpoint for quantization-conditioned backdoors with no original model and no trigger prompts (MLX affine 4-bit
+group 64 tested; spectral sign-coherence of $Q(W)-W$, cell-boundary clustering, block bin-collapse, and optional behavior-space mirror
+comparison against $2W-Q(W)$ and sign-randomized nulls), and `kestrom inspect disarm` neutralizes only the flagged tensors with
+anchor-preserving stochastic rounding, unbiased for values inside the quantizer grid (checkable with `kestrom-verify diff`). A finding is evidence to read; no finding is not a
+proof that the model is clean (`python -m pydoc kestrom.inspect`, `kestrom.mirror`).
 
 ## What is not guaranteed
 

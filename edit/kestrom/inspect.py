@@ -1,4 +1,4 @@
-"""Look for a backdoor in a fine-tuned model delivered to you (reads the models and changes none of them, `base` and `gguf` write a new folder; tier 3: no guarantee, a finding is
+"""Look for a backdoor in a fine-tuned model delivered to you (reads the models and changes none of them, `base`, `gguf` and `disarm` write a new folder; tier 3: no guarantee, a finding is
 evidence to read, and no finding does not prove the model clean). Made for acceptance: you hold the original, the recipe the
 fine-tune declares (LoRA rank and target tensors, quantization, the training data) and the delivered model. A folder of
 safetensors (a GGUF file through `gguf`); MLX where a model is run or a tensor is quantized.
@@ -50,6 +50,21 @@ safetensors (a GGUF file through `gguf`); MLX where a model is run or a tensor i
       base.gguf.types (the type of each tensor given to llama-quantize) and base.gguf.log (its output). Then run shape, lens, behavior and
       trigger with DST/base against DST/model. The original through BF16 GGUF and back gives every tensor's bytes but A_log and the
       norms (within 6e-8), in both layouts. Tested with Q4_K_M only
+  kestrom inspect mirror MODEL OUT.json [PROMPTS.json|none] [BITS] [GROUP] [MODE]
+      look for a quantization-conditioned backdoor in a single FP16/BF16 checkpoint with no original model and no trigger prompts
+      (default: MLX affine 4-bit, group 64; BITS 2, 4 or 8, MODE affine only; `none` for PROMPTS.json to give BITS without it). For each 2-D language-model tensor, computes E = Q(W) − W and checks three self-controlled
+      signals: spectral sign-coherence rho1 = sigma1(E) / mean_k sigma1(E * sigma_k) against Rademacher sign flips (flagged > 1.10),
+      interior quantization cell-boundary clustering boundary_frac_85 (flagged > 0.20; tensors already on the grid with mean_u < 0.05
+      are listed under `on_grid` and skipped for residual-based flags), and active block bin-collapse
+      ge90 (flagged >= 30). When PROMPTS.json is given (plain text, no trigger), also compares W, Q(W) = W + E, the anti-quantization
+      mirror W_mirror = 2W − Q(W) = W − E, and three sign-randomized nulls W_sigma on mean logits to report coherence_ratio_broad and
+      mirror antisymmetry at the top lifted token (behavior flagged when coherence_ratio_broad or coherence_ratio_conc > 2). Writes a deterministic JSON report (same inputs -> same bytes)
+  kestrom inspect disarm MODEL MIRROR.json DST [SEED]
+      trigger-blind neutralization for tensors flagged in MIRROR.json: copies MODEL to DST and replaces only the flagged tensors with
+      anchor-preserving stochastic rounding on the quantizer grid (E[Q_SR(W)] = W for values inside the grid; MLX moves the scale so that
+      zero is on the grid, and values past the grid's last point round to it), leaving every unflagged tensor byte-identical
+      (checkable with `kestrom-verify diff`). Preserving group min/max anchors keeps the disarmed codes under subsequent standard quantization.
+      Stops when a flagged tensor is not in MODEL
 """
 import json
 import tempfile
