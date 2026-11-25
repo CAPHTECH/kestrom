@@ -199,7 +199,10 @@ def clone_cache(cache):
     out = []
     for c in cache:
         cls = type(c)
-        out.append(cls.from_state(_clone_tree(c.state), _clone_tree(c.meta_state)))
+        if hasattr(c, "meta_state"):
+            out.append(cls.from_state(_clone_tree(c.state), _clone_tree(c.meta_state)))
+        else:
+            out.append(cls.from_state(_clone_tree(c.state)))
     return out
 
 

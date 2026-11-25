@@ -203,8 +203,8 @@ def run(model_dir, prompts_file, out, max_tokens=report.MAX_TOKENS, rules_file=N
     rules.SIDE.clear()
     if rules_file:
         rules.SIDE.update(rules.load(rules_file, tok))
-        if rules.SIDE["kv"] and rules.SIDE["kv"][0]["fingerprint"] != kv.model_fingerprint(model_dir):
-            raise SystemExit(f"{rules.SIDE['kv'][0]['dir']} was compiled for another model than {model_dir} (the model fingerprint differs)")
+        if rules.SIDE["kv"]:
+            kv.check_model(rules.SIDE["kv"][0], model_dir)
         rules.attach(model)
     compose_cache = kv.ComposeCache() if rules.SIDE.get("kv") else None
     think_end = tok.convert_tokens_to_ids(loopguard.THINK_END) if loopguard.THINK_END in tok.get_vocab() else None
