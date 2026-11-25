@@ -6,11 +6,12 @@ entries match simultaneously, their texts are composed and prefilled once on dem
 with `kestrom-verify compare events`.
 `kestrom generate` and `kestrom kv chat` refuse a bank whose `rules.dsl` or cache files are not the ones its `manifest.json` hashed, or
 whose model fingerprint (hashes of the model's config and tokenizer files, and the sizes of its `.safetensors` shards) is not the model's.
+When a rules file combines `kv:` with `in ... prompt` conditions, `in ... prompt` is evaluated on the full prompt without the fact KV cache before decoding begins.
   kestrom kv compile MODEL RULES.dsl FACTS.json OUT_DIR [PREV_DIR]
       compile one `.safetensors` prefix KV file per entry in FACTS.json into OUT_DIR, together with `rules.dsl` and
       `manifest.json`. FACTS.json is either `{CLASS: TEXT, ...}` (for single-head rules) or a list of `{"key": ..., "when": CLASS |
       {HEAD: CLASS, ...}, "text": ...}`. With PREV_DIR, entries whose key and `prefix_ids` are unchanged for the same model fingerprint are
-      copied without recomputing. Use from `kestrom generate --rules` via a `kv: BANK_DIR [MAX_MATCH]` line.
+      copied without recomputing. Compiles into a staging folder and renames atomically, so a failed run leaves no partial OUT_DIR. Use from `kestrom generate --rules` via a `kv: BANK_DIR [MAX_MATCH]` line.
   kestrom kv chat MODEL BANK_DIR [MAX_TOKENS] [MAX_MATCH] [TURNS.json] [OUT.jsonl]
       multi-turn chat session using a compiled KV bank. Every turn evaluates the full turn history (`steps`) through the bank's
       rules so `prev` lines and registers resolve follow-ups without extra model calls. When matched keys are unchanged and the chat
@@ -22,6 +23,7 @@ from collections import OrderedDict
 import hashlib
 import json
 import shutil
+import tempfile
 from pathlib import Path
 
 from kestrom_verify import report
@@ -197,10 +199,7 @@ def clone_cache(cache):
     out = []
     for c in cache:
         cls = type(c)
-        if hasattr(c, "meta_state"):
-            out.append(cls.from_state(_clone_tree(c.state), _clone_tree(c.meta_state)))
-        else:
-            out.append(cls.from_state(_clone_tree(c.state)))
+        out.append(cls.from_state(_clone_tree(c.state), _clone_tree(c.meta_state)))
     return out
 
 
@@ -240,7 +239,7 @@ def compile(model_dir, rules_file, facts_file, out_dir, prev_dir=None):
     R = rules.standalone(rules_file)
     facts = parse_facts(report.read(facts_file), R)
     out_path = Path(out_dir)
-    if out_path.exists() and any(out_path.iterdir()):
+    if out_path.is_file() or (out_path.exists() and any(out_path.iterdir())):
         raise SystemExit(f"{out_dir} already exists and is not empty")
     model_path = Path(model_dir)
     fp = model_fingerprint(model_path)
@@ -272,43 +271,57 @@ def compile(model_dir, rules_file, facts_file, out_dir, prev_dir=None):
             raise SystemExit(f"entry {entry['key']!r}: strip_prefix {sp} differs from {strip_prefix}")
         tokenized.append((entry, pfx))
 
-    out_path.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(rules_file, out_path / "rules.dsl")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = Path(tempfile.mkdtemp(prefix=f".{out_path.name}.tmp.", dir=out_path.parent))
+    try:
+        shutil.copyfile(rules_file, tmp_path / "rules.dsl")
 
-    compiled, reused, manifest_entries = 0, 0, []
-    for entry, pfx in tokenized:
-        fname = entry_filename(entry["key"])
-        dst = out_path / fname
-        pkey = (entry["key"], tuple(pfx))
-        if pkey in prev_by_prefix:
-            src, prev_sha = prev_by_prefix[pkey]
-            check_file(src, prev_sha, prev_dir)
-            shutil.copyfile(src, dst)
-            reused += 1
-        else:
-            compile_prefix(model, pfx, dst, entry["key"])
-            compiled += 1
-        manifest_entries.append({
-            "key": entry["key"],
-            "when": entry["when"],
-            "text": entry["text"],
-            "text_sha256": sha256_bytes(entry["text"].encode("utf-8")),
-            "prefix_ids": pfx,
-            "file": fname,
-            "cache_sha256": sha256_file(dst),
-            "nbytes": dst.stat().st_size,
-        })
+        compiled, reused, manifest_entries = 0, 0, []
+        for entry, pfx in tokenized:
+            fname = entry_filename(entry["key"])
+            dst = tmp_path / fname
+            pkey = (entry["key"], tuple(pfx))
+            if pkey in prev_by_prefix:
+                src, prev_sha = prev_by_prefix[pkey]
+                check_file(src, prev_sha, prev_dir)
+                shutil.copyfile(src, dst)
+                reused += 1
+            else:
+                compile_prefix(model, pfx, dst, entry["key"])
+                compiled += 1
+            manifest_entries.append({
+                "key": entry["key"],
+                "when": entry["when"],
+                "text": entry["text"],
+                "text_sha256": sha256_bytes(entry["text"].encode("utf-8")),
+                "prefix_ids": pfx,
+                "file": fname,
+                "cache_sha256": sha256_file(dst),
+                "nbytes": dst.stat().st_size,
+            })
 
-    manifest = {
-        "format": FORMAT,
-        "fingerprint": fp,
-        "rules_sha256": sha256_file(out_path / "rules.dsl"),
-        "strip_prefix": strip_prefix or [],
-        "entries": manifest_entries,
-    }
-    (out_path / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+        manifest = {
+            "format": FORMAT,
+            "fingerprint": fp,
+            "rules_sha256": sha256_file(tmp_path / "rules.dsl"),
+            "strip_prefix": strip_prefix or [],
+            "entries": manifest_entries,
+        }
+        (tmp_path / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+        if out_path.exists():
+            out_path.rmdir()
+        tmp_path.replace(out_path)
+    except BaseException:
+        shutil.rmtree(tmp_path, ignore_errors=True)
+        raise
     mean_kb = sum(e["nbytes"] for e in manifest_entries) / len(manifest_entries) / 1024.0
     print("compiled", compiled, "reused", reused, "total", len(manifest_entries), "mean_kb", round(mean_kb, 1), flush=True)
+
+
+def check_model(bank: dict, model_dir):
+    """Refuse a bank compiled for another model than MODEL (its fingerprint)."""
+    if bank["fingerprint"] != model_fingerprint(model_dir):
+        raise SystemExit(f"{bank['dir']} was compiled for another model than {model_dir} (the model fingerprint differs)")
 
 
 def load_bank(bank_dir, tok=None) -> dict:
@@ -347,12 +360,6 @@ def match_entries(bank: dict, data: dict, max_match: int = 1) -> list[dict]:
     return hits if 1 <= len(hits) <= int(max_match) else []
 
 
-def match_entry(bank: dict, data: dict):
-    """Evaluate the bank's standalone rules on `data`; return the matching entry iff uniquely matched, else None."""
-    hits = match_entries(bank, data, 1)
-    return hits[0] if hits else None
-
-
 def format_kv_key(hits: list[dict]):
     if not hits:
         return None
@@ -366,18 +373,21 @@ def load_cache_file(path: str):
     return load_prompt_cache(str(path))
 
 
-def _mlx_decode(model, tok, feed_ids: list[int], max_tokens: int, prompt_cache) -> tuple[list[int], str]:
+def _mlx_decode(model, tok, feed_ids: list[int], max_tokens: int, prompt_cache) -> tuple[list[int], str, list[int]]:
+    """Greedy decode: (tokens, finish, the generated ids prompt_cache now holds). generate_step feeds each token into the cache
+    before yielding it, so the cache holds every yielded token, the end token included."""
     import mlx.core as mx
     from mlx_lm.generate import generate_step
 
-    toks, finish = [], "length"
+    toks, finish, held = [], "length", []
     for t, _ in generate_step(mx.array(feed_ids), model, max_tokens=max_tokens, prompt_cache=prompt_cache):
         ti = int(t)
+        held.append(ti)
         if ti in tok.eos_token_ids:
             finish = "stop"
             break
         toks.append(ti)
-    return toks, finish
+    return toks, finish, held
 
 
 class KVSession:
@@ -463,10 +473,10 @@ class KVSession:
             else:
                 cache_action = "plain" if self.active_keys is None else "switch"
 
-        toks, finish = self._decode(feed_ids, prompt_cache)
+        toks, finish, held = self._decode(feed_ids, prompt_cache)
         self.live_cache = prompt_cache
         self.active_keys = target_keys
-        self.cached_ids = full_ids + (toks if finish == "stop" else toks[:-1])
+        self.cached_ids = full_ids + held
         reply = self.tok.decode(toks)
         self.messages.append({"role": "assistant", "content": reply})
         return {
@@ -489,9 +499,7 @@ def chat(model_dir, bank_dir, max_tokens=report.MAX_TOKENS, max_match=3, turns_f
         raise SystemExit("MAX_TOKENS and MAX_MATCH must be at least 1")
     if turns_file is not None and out_file is None:
         raise SystemExit("chat with TURNS.json requires OUT.jsonl")
-    bank0 = load_bank(bank_dir)
-    if bank0["fingerprint"] != model_fingerprint(model_dir):
-        raise SystemExit(f"{bank_dir} was compiled for another model than {model_dir} (the model fingerprint differs)")
+    check_model(load_bank(bank_dir), model_dir)
     turns = report.read(turns_file) if turns_file is not None else None
 
     from mlx_lm import load
@@ -501,7 +509,7 @@ def chat(model_dir, bank_dir, max_tokens=report.MAX_TOKENS, max_match=3, turns_f
     session = KVSession(model, tok, bank, max_tokens=max_tokens, max_match=max_match)
 
     if turns is not None:
-        rows = []
+        f = open(out_file, "w", encoding="utf-8")  # one line per turn as it is done (a long run keeps what it finished)
         for entry in turns:
             if isinstance(entry, str):
                 res = session.turn(entry)
@@ -517,13 +525,14 @@ def chat(model_dir, bank_dir, max_tokens=report.MAX_TOKENS, max_match=3, turns_f
                         res[k] = v
             else:
                 raise SystemExit(f"TURNS.json entry must be a string or object: {entry!r}")
-            rows.append(res)
+            f.write(json.dumps(res, ensure_ascii=False) + "\n")
+            f.flush()
             print(
                 f"turn {res['turn']} kv={res['kv']} action={res['cache_action']} "
                 f"prefill={res['prefill_tokens']} tokens={len(res['tokens'])}",
                 flush=True,
             )
-        report.write_lines(out_file, rows)
+        f.close()
         return
 
     print("kestrom kv chat (/reset, /status, /quit)", flush=True)

@@ -101,7 +101,8 @@ a name in an h1 line: declared by an `in` line, or else read by a probe (by run,
                                              compiled prefix KV cache (composing >=2 matched entries on demand with an in-memory LRU
                                              cache), feeds only the prompt tokens after the shared prefix (zero knowledge text in the
                                              prompt), and records event 0; otherwise no cache is injected and the kv line records no
-                                             event. OUT records "kv" as the matched entry key (list when >=2) or null. One kv line at most
+                                             event. Any `in ... prompt` conditions in the same rules are evaluated on the full prompt
+                                             without the fact cache before decoding. OUT records "kv" as the matched entry key (list when >=2) or null. One kv line at most
 """
 import ast
 import json

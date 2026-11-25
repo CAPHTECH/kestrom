@@ -136,11 +136,11 @@ def test_match_entry_single_multi_and_tie(tmp_path):
             {"key": "f/1", "when": {"floor": "f1"}, "file": "b.safetensors"},
         ],
     }
-    assert kv.match_entry(bank, {"text": "空調の様子"})["key"] == "m/ac"
-    assert kv.match_entry(bank, {"text": "1階の様子"})["key"] == "f/1"
-    # Ambiguous match across two entries (both meter/ac and floor/f1 fire) -> returns None cleanly.
-    assert kv.match_entry(bank, {"text": "1階の空調"}) is None
-    assert kv.match_entry(bank, {"text": "天気"}) is None
+    assert [e["key"] for e in kv.match_entries(bank, {"text": "空調の様子"}, 1)] == ["m/ac"]
+    assert [e["key"] for e in kv.match_entries(bank, {"text": "1階の様子"}, 1)] == ["f/1"]
+    # Ambiguous match across two entries (both meter/ac and floor/f1 fire) -> no entry with MAX_MATCH 1.
+    assert kv.match_entries(bank, {"text": "1階の空調"}, 1) == []
+    assert kv.match_entries(bank, {"text": "天気"}, 1) == []
 
 
 def test_kv_line_parsing_and_kv_for(tmp_path):
@@ -237,6 +237,41 @@ def test_compile_deterministic_and_incremental_reuse(tmp_path, monkeypatch):
     facts3.write_text(json.dumps([{"key": "ac2", "when": "ac", "text": "AC old"}, {"key": "light", "when": "light", "text": "Light old"}]), encoding="utf-8")
     kv.compile(str(model_dir), str(rules_file), str(facts3), str(tmp_path / "bank3"), prev_dir=str(bank1))
     assert [k for k, _ in calls] == ["ac2"]  # a renamed key is compiled afresh, so the file holds its own key
+
+
+def test_compile_midway_failure_leaves_no_partial_out_dir(tmp_path, monkeypatch):
+    model_dir = tmp_path / "model"
+    model_dir.mkdir()
+    (model_dir / "config.json").write_text('{"model_type": "test"}', encoding="utf-8")
+    (model_dir / "model.safetensors").write_bytes(b"weights")
+    rules_file = tmp_path / "rules.dsl"
+    rules_file.write_text(SINGLE_DSL, encoding="utf-8")
+    facts_file = tmp_path / "facts.json"
+    facts_file.write_text(json.dumps({"ac": "AC", "light": "Light"}), encoding="utf-8")
+
+    state = {"n": 0}
+
+    def flaky_compile_prefix(model, prefix_ids, out_file, key):
+        state["n"] += 1
+        out_file.write_bytes(b"partial")
+        if state["n"] == 2:
+            raise RuntimeError("simulated crash")
+
+    monkeypatch.setattr(kv, "compile_prefix", flaky_compile_prefix)
+    fake_mlx_lm = types.ModuleType("mlx_lm")
+    fake_mlx_lm.load = lambda path: (object(), MockTok(bos=2))
+    monkeypatch.setitem(sys.modules, "mlx_lm", fake_mlx_lm)
+
+    out_dir = tmp_path / "bank_atomic"
+    with pytest.raises(RuntimeError):
+        kv.compile(str(model_dir), str(rules_file), str(facts_file), str(out_dir))
+    assert not out_dir.exists()
+    assert not list(tmp_path.glob(".bank_atomic.tmp.*"))
+
+    # Retry succeeds immediately into the same OUT_DIR (also when an empty OUT_DIR already existed).
+    out_dir.mkdir()
+    kv.compile(str(model_dir), str(rules_file), str(facts_file), str(out_dir))
+    assert (out_dir / "manifest.json").is_file()
 
 
 def test_decode_with_kv_passes_kestrom_verify_compare_events(tmp_path, monkeypatch):
@@ -403,6 +438,8 @@ def test_compose_cache_lru_and_clone(tmp_path, monkeypatch):
     prefill_calls = []
 
     class FakeLayer:
+        meta_state = ""
+
         def __init__(self, data):
             self.data = data
 
@@ -411,7 +448,7 @@ def test_compose_cache_lru_and_clone(tmp_path, monkeypatch):
             return list(self.data)
 
         @classmethod
-        def from_state(cls, state):
+        def from_state(cls, state, meta_state):
             return cls(state)
 
     def fake_prefill(model, prefix_ids):
@@ -518,8 +555,10 @@ def test_kv_session_multiturn_reuse_switch_compose_and_rebuild(tmp_path, monkeyp
 
     tok = MultiTurnMockTok()
 
-    def fake_decode(feed_ids, prompt_cache):
-        return [100 + ord("ok"[0]), 100 + ord("ok"[1])], "stop"
+    ok = [100 + ord("o"), 100 + ord("k")]
+
+    def fake_decode(feed_ids, prompt_cache):  # like generate_step: the cache holds the end-of-turn token it stopped on
+        return ok, "stop", ok + [31]
 
     sess = kv.KVSession(None, tok, bank, max_tokens=16, max_match=3, compose_cache=FakeLRU(), decode_fn=fake_decode, make_cache_fn=lambda m: ["empty"])
 
@@ -531,7 +570,7 @@ def test_kv_session_multiturn_reuse_switch_compose_and_rebuild(tmp_path, monkeyp
     assert built == [("billing",)]
 
     r2 = sess.turn("retry limit?")
-    expected_delta = len([31, 20] + tok._enc("retry limit?") + [21])
+    expected_delta = len([20] + tok._enc("retry limit?") + [21])  # the end-of-turn token 31 is in the cache already
     assert r2["kv"] == "billing" and r2["cache_action"] == "reuse" and r2["prefill_tokens"] == expected_delta
     assert built == [("billing",)]  # zero rebuild or reload on topic continuation
 
@@ -548,6 +587,12 @@ def test_kv_session_multiturn_reuse_switch_compose_and_rebuild(tmp_path, monkeyp
     t0 = sess2.turn("billing timeout?")
     t1 = sess2.turn("retry limit?")
     assert t0["cache_action"] == "init" and t1["cache_action"] == "rebuild"
+
+    # Cut at MAX_TOKENS: the cache holds every token yielded and no end-of-turn token, so the next turn feeds that token.
+    sess3 = kv.KVSession(None, tok, bank, max_tokens=2, max_match=3, compose_cache=FakeLRU(), decode_fn=lambda f, c: (ok, "length", ok), make_cache_fn=lambda m: ["empty"])
+    sess3.turn("billing timeout?")
+    u1 = sess3.turn("retry limit?")
+    assert u1["cache_action"] == "reuse" and u1["prefill_tokens"] == len([31, 20] + tok._enc("retry limit?") + [21])
 
 
 def test_generate_multi_match_passes_kestrom_verify(tmp_path, monkeypatch):
