@@ -1,14 +1,24 @@
 """Compiled Fact-KV Routing (KV-A): compile per-fact system-prefix KV caches from a standalone rules DSL and inject the matching
-cache at greedy decoding time (MLX, tier 1). When a prompt's `data` matches no fact (or ties), no cache is injected and the kv line records
-no event (where no other line acts, decoding runs unchanged: `events=[]`); when a fact matches, only the prompt tokens after the
-shared prefix (no knowledge text) are fed with the compiled cache, recording event `0`. Check with `kestrom-verify compare events`.
-`kestrom generate` refuses a bank whose `rules.dsl` or cache files are not the ones its `manifest.json` hashed, or whose model
-fingerprint (hashes of the model's config and tokenizer files, and the sizes of its `.safetensors` shards) is not the model's.
+cache at greedy decoding time (MLX, tier 1). When a prompt's `data` matches no fact (or exceeds MAX_MATCH), no cache is injected and the
+kv line records no event (where no other line acts, decoding runs unchanged: `events=[]`); when one fact matches, only the prompt tokens
+after the shared prefix (no knowledge text) are fed with the compiled cache, recording event `0`. When MAX_MATCH > 1 and 2..MAX_MATCH
+entries match simultaneously, their texts are composed and prefilled once on demand and kept in an in-memory LRU cache. Check batch runs
+with `kestrom-verify compare events`.
+`kestrom generate` and `kestrom kv chat` refuse a bank whose `rules.dsl` or cache files are not the ones its `manifest.json` hashed, or
+whose model fingerprint (hashes of the model's config and tokenizer files, and the sizes of its `.safetensors` shards) is not the model's.
   kestrom kv compile MODEL RULES.dsl FACTS.json OUT_DIR [PREV_DIR]
       compile one `.safetensors` prefix KV file per entry in FACTS.json into OUT_DIR, together with `rules.dsl` and
       `manifest.json`. FACTS.json is either `{CLASS: TEXT, ...}` (for single-head rules) or a list of `{"key": ..., "when": CLASS |
       {HEAD: CLASS, ...}, "text": ...}`. With PREV_DIR, entries whose key and `prefix_ids` are unchanged for the same model fingerprint are
-      copied without recomputing. Use from `kestrom generate --rules` via a `kv: BANK_DIR` line."""
+      copied without recomputing. Use from `kestrom generate --rules` via a `kv: BANK_DIR [MAX_MATCH]` line.
+  kestrom kv chat MODEL BANK_DIR [MAX_TOKENS] [MAX_MATCH] [TURNS.json] [OUT.jsonl]
+      multi-turn chat session using a compiled KV bank. Every turn evaluates the full turn history (`steps`) through the bank's
+      rules so `prev` lines and registers resolve follow-ups without extra model calls. When matched keys are unchanged and the chat
+      template extends the cached tokens as a prefix, the live KV cache is reused incrementally (zero re-prefill of earlier turns); on
+      topic switches it swaps in the new cache and re-prefills the conversation; when multiple entries match (up to MAX_MATCH, 3 unless
+      given), they are composed via the in-memory LRU cache. With TURNS.json (`["turn1", ...]` or `[{"user": ..., "values": ..., "data": ..., "reset": ...}]`),
+      writes one JSONL row per turn to OUT.jsonl; without TURNS.json, runs an interactive session (/reset, /status, /quit)."""
+from collections import OrderedDict
 import hashlib
 import json
 import shutil
@@ -104,15 +114,19 @@ def model_fingerprint(model_dir: Path) -> dict:
     return {"meta": meta, "shards": shards}
 
 
-def _chat_ids(tok, user_text: str, system_text: str | None) -> list[int]:
-    messages = ([{"role": "system", "content": system_text}] if system_text is not None else []) + [{"role": "user", "content": user_text}]
+def _chat_messages_ids(tok, messages: list[dict], enable_thinking: bool = False) -> list[int]:
     try:
-        ids = tok.apply_chat_template(messages, add_generation_prompt=True, enable_thinking=False)
+        ids = tok.apply_chat_template(messages, add_generation_prompt=True, enable_thinking=enable_thinking)
     except TypeError:
         ids = tok.apply_chat_template(messages, add_generation_prompt=True)
     if isinstance(ids, dict) or hasattr(ids, "input_ids"):
         ids = ids["input_ids"]
     return [int(x) for x in ids]
+
+
+def _chat_ids(tok, user_text: str, system_text: str | None) -> list[int]:
+    messages = ([{"role": "system", "content": system_text}] if system_text is not None else []) + [{"role": "user", "content": user_text}]
+    return _chat_messages_ids(tok, messages, enable_thinking=False)
 
 
 def prefix_boundary(tok, fact_text: str) -> tuple[list[int], list[int]]:
@@ -145,10 +159,10 @@ def _compact_cache(cache):
                 c.values = c.values[..., :c.offset, :]
 
 
-def compile_prefix(model, prefix_ids: list[int], out_file: Path, key: str):
-    """Prefill prefix_ids into a fresh prompt cache and save it as a safetensors cache file."""
+def prefill_prefix(model, prefix_ids: list[int]):
+    """Prefill prefix_ids into a fresh prompt cache and return the evaluated cache list."""
     import mlx.core as mx
-    from mlx_lm.models.cache import make_prompt_cache, save_prompt_cache
+    from mlx_lm.models.cache import make_prompt_cache
 
     cache = make_prompt_cache(model)
     pos = 0
@@ -159,7 +173,66 @@ def compile_prefix(model, prefix_ids: list[int], out_file: Path, key: str):
         pos += len(chunk)
     _compact_cache(cache)
     mx.eval([c.state for c in cache])
+    return cache
+
+
+def compile_prefix(model, prefix_ids: list[int], out_file: Path, key: str):
+    """Prefill prefix_ids into a fresh prompt cache and save it as a safetensors cache file."""
+    from mlx_lm.models.cache import save_prompt_cache
+
+    cache = prefill_prefix(model, prefix_ids)
     save_prompt_cache(str(out_file), cache, metadata={"kestrom_kv_key": key, "prefix_len": str(len(prefix_ids))})
+
+
+def _clone_tree(x):
+    if isinstance(x, list):
+        return [_clone_tree(v) for v in x]
+    if isinstance(x, tuple):
+        return tuple(_clone_tree(v) for v in x)
+    return x
+
+
+def clone_cache(cache):
+    """Shallow-clone cache layer objects and container structures so advancing one copy never mutates another."""
+    out = []
+    for c in cache:
+        cls = type(c)
+        if hasattr(c, "meta_state"):
+            out.append(cls.from_state(_clone_tree(c.state), _clone_tree(c.meta_state)))
+        else:
+            out.append(cls.from_state(_clone_tree(c.state)))
+    return out
+
+
+class ComposeCache:
+    """In-memory LRU cache for multi-entry composed prefix KV caches."""
+
+    def __init__(self, maxsize: int = 16):
+        self.maxsize = max(0, int(maxsize))
+        self._cache: OrderedDict[tuple[str, ...], list] = OrderedDict()
+        self.hits = 0
+        self.misses = 0
+
+    def get_or_build(self, model, tok, bank: dict, hits: list[dict]):
+        """Return a fresh prompt cache for hits (loading 1-hit from disk or composing >=2 hits via LRU)."""
+        if len(hits) == 1:
+            return load_cache_file(str(Path(bank["dir"]) / hits[0]["file"]))
+        combo_key = tuple(e["key"] for e in hits)
+        if combo_key in self._cache:
+            self._cache.move_to_end(combo_key)
+            self.hits += 1
+            return clone_cache(self._cache[combo_key])
+        self.misses += 1
+        combined_text = "\n\n".join(e["text"] for e in hits)
+        sp, pfx = prefix_boundary(tok, combined_text)
+        if sp != bank["strip_prefix"]:
+            raise SystemExit(f"composed prefix strip_prefix {sp} differs from bank strip_prefix {bank['strip_prefix']}")
+        snap = prefill_prefix(model, pfx)
+        if self.maxsize > 0:
+            self._cache[combo_key] = snap
+            if len(self._cache) > self.maxsize:
+                self._cache.popitem(last=False)
+        return clone_cache(snap)
 
 
 def compile(model_dir, rules_file, facts_file, out_dir, prev_dir=None):
@@ -259,11 +332,11 @@ def load_bank(bank_dir, tok=None) -> dict:
     return {"dir": str(bpath), "rules": R, "entries": entries, "strip_prefix": sp, "fingerprint": m.get("fingerprint", {})}
 
 
-def match_entry(bank: dict, data: dict):
-    """Evaluate the bank's standalone rules on `data`; return the matching entry iff uniquely matched, else None."""
+def match_entries(bank: dict, data: dict, max_match: int = 1) -> list[dict]:
+    """Evaluate the bank's standalone rules on `data`; return matching entries iff 1 <= count <= max_match."""
     cls = next(rules.answers(bank["rules"], [data]))[0]["class"]
     if cls is None:
-        return None
+        return []
     hits = []
     for e in bank["entries"]:
         w = e["when"]
@@ -271,7 +344,19 @@ def match_entry(bank: dict, data: dict):
             hits.append(e)
         elif isinstance(w, dict) and isinstance(cls, dict) and all(cls.get(h) == v for h, v in w.items()):
             hits.append(e)
-    return hits[0] if len(hits) == 1 else None
+    return hits if 1 <= len(hits) <= int(max_match) else []
+
+
+def match_entry(bank: dict, data: dict):
+    """Evaluate the bank's standalone rules on `data`; return the matching entry iff uniquely matched, else None."""
+    hits = match_entries(bank, data, 1)
+    return hits[0] if hits else None
+
+
+def format_kv_key(hits: list[dict]):
+    if not hits:
+        return None
+    return hits[0]["key"] if len(hits) == 1 else [e["key"] for e in hits]
 
 
 def load_cache_file(path: str):
@@ -279,3 +364,190 @@ def load_cache_file(path: str):
     from mlx_lm.models.cache import load_prompt_cache
 
     return load_prompt_cache(str(path))
+
+
+def _mlx_decode(model, tok, feed_ids: list[int], max_tokens: int, prompt_cache) -> tuple[list[int], str]:
+    import mlx.core as mx
+    from mlx_lm.generate import generate_step
+
+    toks, finish = [], "length"
+    for t, _ in generate_step(mx.array(feed_ids), model, max_tokens=max_tokens, prompt_cache=prompt_cache):
+        ti = int(t)
+        if ti in tok.eos_token_ids:
+            finish = "stop"
+            break
+        toks.append(ti)
+    return toks, finish
+
+
+class KVSession:
+    """Multi-turn session with stateful `steps`/`prev` rule evaluation, incremental cache reuse, and multi-entry composition."""
+
+    def __init__(
+        self,
+        model,
+        tok,
+        bank: dict,
+        max_tokens: int = report.MAX_TOKENS,
+        max_match: int = 3,
+        compose_cache: ComposeCache | None = None,
+        enable_thinking: bool = False,
+        decode_fn=None,
+        make_cache_fn=None,
+    ):
+        self.model = model
+        self.tok = tok
+        self.bank = bank
+        self.max_tokens = int(max_tokens)
+        self.max_match = int(max_match)
+        self.compose_cache = compose_cache if compose_cache is not None else ComposeCache()
+        self.enable_thinking = enable_thinking
+        self._decode = decode_fn if decode_fn is not None else (lambda feed, cache: _mlx_decode(model, tok, feed, self.max_tokens, cache))
+        if make_cache_fn is not None:
+            self._make_cache = make_cache_fn
+        else:
+            from mlx_lm.models.cache import make_prompt_cache
+            self._make_cache = make_prompt_cache
+        self.messages: list[dict] = []
+        self.steps: list[dict] = []
+        self.active_keys: tuple[str, ...] | None = None
+        self.live_cache = None
+        self.cached_ids: list[int] = []
+
+    def reset(self):
+        """Clear conversation history and live KV state while keeping compiled multi-entry snapshots warm."""
+        self.messages.clear()
+        self.steps.clear()
+        self.active_keys = None
+        self.live_cache = None
+        self.cached_ids.clear()
+
+    def turn(self, user_text: str, values: dict | None = None, data: dict | None = None) -> dict:
+        """Advance one user turn, keeping active KV state incrementally or switching/composing on topic changes."""
+        step = dict(data) if data is not None else {"text": user_text}
+        if values is not None:
+            step["values"] = values
+        self.steps.append(step)
+        hits = match_entries(self.bank, {"steps": list(self.steps)}, self.max_match)
+        self.messages.append({"role": "user", "content": user_text})
+        full_ids = _chat_messages_ids(self.tok, self.messages, enable_thinking=self.enable_thinking)
+        target_keys = tuple(e["key"] for e in hits) if hits else None
+        sp = self.bank["strip_prefix"]
+        if hits and full_ids[:len(sp)] != sp:
+            raise SystemExit(f"turn {len(self.steps) - 1}: prompt ids do not start with bank strip_prefix {sp}")
+
+        if (
+            self.live_cache is not None
+            and target_keys == self.active_keys
+            and self.cached_ids
+            and len(full_ids) > len(self.cached_ids)
+            and full_ids[:len(self.cached_ids)] == self.cached_ids
+        ):
+            feed_ids = full_ids[len(self.cached_ids):]
+            prompt_cache = self.live_cache
+            cache_action = "reuse"
+        elif hits:
+            prompt_cache = self.compose_cache.get_or_build(self.model, self.tok, self.bank, hits)
+            feed_ids = full_ids[len(sp):]
+            if self.cached_ids and target_keys == self.active_keys:
+                cache_action = "rebuild"
+            elif len(hits) > 1:
+                cache_action = "compose"
+            else:
+                cache_action = "init" if not self.cached_ids else "switch"
+        else:
+            prompt_cache = self._make_cache(self.model)
+            feed_ids = full_ids
+            if self.cached_ids and self.active_keys is None:
+                cache_action = "rebuild"
+            else:
+                cache_action = "plain" if self.active_keys is None else "switch"
+
+        toks, finish = self._decode(feed_ids, prompt_cache)
+        self.live_cache = prompt_cache
+        self.active_keys = target_keys
+        self.cached_ids = full_ids + (toks if finish == "stop" else toks[:-1])
+        reply = self.tok.decode(toks)
+        self.messages.append({"role": "assistant", "content": reply})
+        return {
+            "turn": len(self.steps) - 1,
+            "user": user_text,
+            "kv": format_kv_key(hits),
+            "cache_action": cache_action,
+            "prefill_tokens": len(feed_ids),
+            "finish": finish,
+            "tokens": toks,
+            "text": reply,
+            "events": [0] if hits else [],
+        }
+
+
+def chat(model_dir, bank_dir, max_tokens=report.MAX_TOKENS, max_match=3, turns_file=None, out_file=None):
+    """Run an interactive or scripted multi-turn session (`kestrom kv chat`) over a compiled KV bank."""
+    max_tokens, max_match = int(max_tokens), int(max_match)
+    if max_tokens < 1 or max_match < 1:
+        raise SystemExit("MAX_TOKENS and MAX_MATCH must be at least 1")
+    if turns_file is not None and out_file is None:
+        raise SystemExit("chat with TURNS.json requires OUT.jsonl")
+    bank0 = load_bank(bank_dir)
+    if bank0["fingerprint"] != model_fingerprint(model_dir):
+        raise SystemExit(f"{bank_dir} was compiled for another model than {model_dir} (the model fingerprint differs)")
+    turns = report.read(turns_file) if turns_file is not None else None
+
+    from mlx_lm import load
+
+    model, tok = load(str(model_dir))
+    bank = load_bank(bank_dir, tok)
+    session = KVSession(model, tok, bank, max_tokens=max_tokens, max_match=max_match)
+
+    if turns is not None:
+        rows = []
+        for entry in turns:
+            if isinstance(entry, str):
+                res = session.turn(entry)
+            elif isinstance(entry, dict):
+                if entry.get("reset"):
+                    session.reset()
+                text = entry.get("user", entry.get("text"))
+                if not isinstance(text, str):
+                    raise SystemExit(f"TURNS.json entry {entry!r}: requires 'user' or 'text'")
+                res = session.turn(text, values=entry.get("values"), data=entry.get("data"))
+                for k, v in entry.items():
+                    if k not in ("user", "text", "values", "data", "reset") and k not in res:
+                        res[k] = v
+            else:
+                raise SystemExit(f"TURNS.json entry must be a string or object: {entry!r}")
+            rows.append(res)
+            print(
+                f"turn {res['turn']} kv={res['kv']} action={res['cache_action']} "
+                f"prefill={res['prefill_tokens']} tokens={len(res['tokens'])}",
+                flush=True,
+            )
+        report.write_lines(out_file, rows)
+        return
+
+    print("kestrom kv chat (/reset, /status, /quit)", flush=True)
+    while True:
+        try:
+            user = input("> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print(flush=True)
+            break
+        if not user:
+            continue
+        if user == "/quit":
+            break
+        if user == "/reset":
+            session.reset()
+            print("[session reset]", flush=True)
+            continue
+        if user == "/status":
+            print(
+                f"[turns={len(session.steps)} active={list(session.active_keys) if session.active_keys else None} "
+                f"compose_hits={session.compose_cache.hits} compose_misses={session.compose_cache.misses}]",
+                flush=True,
+            )
+            continue
+        res = session.turn(user)
+        print(f"[kv={res['kv']} action={res['cache_action']} prefill={res['prefill_tokens']}]", flush=True)
+        print(res["text"], flush=True)

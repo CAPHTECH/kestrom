@@ -4,6 +4,8 @@
                                                         output is the original's until the first event
   kv compile MODEL RULES.dsl FACTS.json OUT_DIR [PREV_DIR]
                                                         compile per-fact prefix KV caches from a rules DSL (`kv:` line in generate)
+  kv chat MODEL BANK_DIR [MAX_TOKENS] [MAX_MATCH] [TURNS.json] [OUT.jsonl]
+                                                        multi-turn chat session over a KV bank (`steps`/`prev` routing, cache reuse & compose)
   ifc {control, firewall} ...                           twin-track information flow control at decoding time (tier 1: check
                                                         with kestrom-verify compare events)
   rules fit MODEL RULES.dsl DATA.json OUT.npz [BALANCE] [K] [STEPS] [LR]
@@ -39,7 +41,7 @@ import sys
 from kestrom_verify import call
 
 # command: (the module whose docstring is its help, its function or {kind: function}); "module:function" for another module
-COMMANDS = {"generate": ("generate", "main"), "kv": ("kv", {"compile": "compile"}),
+COMMANDS = {"generate": ("generate", "main"), "kv": ("kv", {"compile": "compile", "chat": "chat"}),
             "ifc": ("ifc", {"control": "control", "firewall": "firewall"}),
             "rules": ("rules", {"fit": "fit", "write-mlp": "mlp:write_mlp", "run": "run", "build": "build", "weigh": "weigh"}),
             "steer": ("steer", {"direction": "direction"}), "rows": ("rows", {"ban-row": "row", "ban": "ban", "lsq": "lsq", "ftpo": "ftpo"}),

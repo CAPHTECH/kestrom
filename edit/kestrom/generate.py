@@ -10,7 +10,7 @@ the tokens without the stop token, text, events (sorted positions) and detail (e
 kept: whether the final output kept the tokens before it; a phrase also string and banned, the token banned, null with gave_up
 when it gave up), with an open line open (the class the answer opens with by that line, null where the rules answered none
 and the line gives no class, the answer was left alone, the thinking did not end or the answer was cut short of it), and with a kv line
-kv (the matched bank entry key, or null where no entry uniquely matched)."""
+kv (the matched bank entry key, a list of keys when MAX_MATCH > 1 matches several, or null where no entry matched)."""
 import argparse
 import json
 
@@ -203,9 +203,10 @@ def run(model_dir, prompts_file, out, max_tokens=report.MAX_TOKENS, rules_file=N
     rules.SIDE.clear()
     if rules_file:
         rules.SIDE.update(rules.load(rules_file, tok))
-        if rules.SIDE["kv"] and rules.SIDE["kv"]["fingerprint"] != kv.model_fingerprint(model_dir):
-            raise SystemExit(f"{rules.SIDE['kv']['dir']} was compiled for another model than {model_dir} (the model fingerprint differs)")
+        if rules.SIDE["kv"] and rules.SIDE["kv"][0]["fingerprint"] != kv.model_fingerprint(model_dir):
+            raise SystemExit(f"{rules.SIDE['kv'][0]['dir']} was compiled for another model than {model_dir} (the model fingerprint differs)")
         rules.attach(model)
+    compose_cache = kv.ComposeCache() if rules.SIDE.get("kv") else None
     think_end = tok.convert_tokens_to_ids(loopguard.THINK_END) if loopguard.THINK_END in tok.get_vocab() else None
     think_start = tok.convert_tokens_to_ids("<think>") if "<think>" in tok.get_vocab() else None
     with open(out, "w", encoding="utf-8") as f:  # one line per prompt as it is done (a long run keeps what it finished)
@@ -215,9 +216,10 @@ def run(model_dir, prompts_file, out, max_tokens=report.MAX_TOKENS, rules_file=N
             opening = rules.opening(x)
             kv_hit = rules.kv_for(x, x["ids"]) if rules_file else None
             if kv_hit is not None:
-                kv_key, kv_path, strip_prefix = kv_hit
+                kv_key, kv_entries, strip_prefix = kv_hit
+                bank = rules.SIDE["kv"][0]
                 feed_ids = x["ids"][len(strip_prefix):]
-                cache_fn = lambda p=kv_path: kv.load_cache_file(p)  # noqa: E731
+                cache_fn = lambda entries=kv_entries, b=bank: compose_cache.get_or_build(model, tok, b, entries)  # noqa: E731
             else:
                 kv_key, feed_ids, cache_fn = None, x["ids"], None
             toks, finish, fired, detail = decode(model, tok, feed_ids, int(max_tokens), rules.SIDE.get("phrases", ()), rules.SIDE.get("window"), think_end, opening, think_start, cache_fn)

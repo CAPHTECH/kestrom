@@ -96,16 +96,16 @@ a name in an h1 line: declared by an `in` line, or else read by a probe (by run,
                                              was left alone, the thinking did not end, or --max-tokens cut the answer short of it);
                                              the tokenizer must spell it, and TEXT, in tokens of whole characters, and where the
                                              other lines ban every token that goes on toward it the run stops. One open line at most
-  kv: BANK_DIR                               compiled fact-KV routing (python -m pydoc kestrom.kv): evaluates the KV bank's rules on
-                                             each prompt's "data". Where an entry uniquely matches, injects its compiled prefix KV
-                                             cache, feeds only the prompt tokens after the shared prefix (zero knowledge text in the
-                                             prompt), and records event 0; otherwise no cache is injected and the prompt runs
-                                             unchanged. OUT records "kv" as the matched entry key or null. One kv line at most
+  kv: BANK_DIR [MAX_MATCH]                   compiled fact-KV routing (python -m pydoc kestrom.kv): evaluates the KV bank's rules on
+                                             each prompt's "data". Where 1 to MAX_MATCH (1 unless given) entries match, injects the
+                                             compiled prefix KV cache (composing >=2 matched entries on demand with an in-memory LRU
+                                             cache), feeds only the prompt tokens after the shared prefix (zero knowledge text in the
+                                             prompt), and records event 0; otherwise no cache is injected and the kv line records no
+                                             event. OUT records "kv" as the matched entry key (list when >=2) or null. One kv line at most
 """
 import ast
 import json
 import operator
-from pathlib import Path
 import re
 
 import numpy as np
@@ -267,9 +267,21 @@ def compile_rules(text, units=UNITS):
     opens = [(rest, m.group(1), m.group(2), m.group(3) and text_of(m.group(3))) for rest, m in opens]
     if any(text is not None and not text[:1].strip() for *_, text in opens):
         raise ValueError("the TEXT of an open line begins with a character that is not white space")
-    kvs = [(rest, body) for kind, rest, body in L if kind == "kv"]
-    if len(kvs) > 1 or any(rest or len(body.split()) != 1 for rest, body in kvs):
-        raise ValueError("one kv line at most, `kv: BANK_DIR`")
+    kvs = []
+    for kind, rest, body in L:
+        if kind == "kv":
+            p = body.split()
+            if rest or len(p) not in (1, 2):
+                raise ValueError("one kv line at most, `kv: BANK_DIR [MAX_MATCH]`")
+            try:
+                mm = int(p[1]) if len(p) == 2 else 1
+            except ValueError:
+                raise ValueError("one kv line at most, `kv: BANK_DIR [MAX_MATCH]`")
+            if mm < 1:
+                raise ValueError("the MAX_MATCH of a kv line is at least 1")
+            kvs.append((p[0], mm))
+    if len(kvs) > 1:
+        raise ValueError("one kv line at most, `kv: BANK_DIR [MAX_MATCH]`")
     sets = []
     for kind, rest, body in L:
         if kind == "set":
@@ -304,7 +316,7 @@ def compile_rules(text, units=UNITS):
     used = sorted(set(np.flatnonzero(net["W3"].any(1)).tolist()) | {u for _, _, u in moves} | {u for _, u in bans})
     return dict(inputs=inputs, declared=declared, tokens=tokens, moves=moves, bans=bans, adds=adds, phrases=phrases,
                 window=(int(loops[0]) if loops[0] else WINDOW) if loops else None, used=used, units=h2n, sets=sets, net=net,
-                open=opens[0] if opens else None, kv=kvs[0][1] if kvs else None)
+                open=opens[0] if opens else None, kv=kvs[0] if kvs else None)
 
 
 def unit_values(net, x, xp=np):
@@ -548,20 +560,20 @@ def opening(x):
 
 
 def kv_for(x, ids):
-    """What a `kv` line injects for prompt x: (entry key, safetensors cache path, strip_prefix), or None without a `kv` line or a unique match."""
+    """What a `kv` line injects for prompt x: (kv value, matched entries, strip_prefix), or None without a `kv` line or match."""
     if not SIDE.get("kv"):
         return None
     if "data" not in x:
         raise SystemExit(f"prompt {x.get('id')}: a kv line reads the prompt's \"data\"")
     from . import kv
-    bank = SIDE["kv"]
-    entry = kv.match_entry(bank, x["data"])
-    if entry is None:
+    bank, max_match = SIDE["kv"]
+    hits = kv.match_entries(bank, x["data"], max_match)
+    if not hits:
         return None
     sp = bank["strip_prefix"]
     if list(ids[:len(sp)]) != sp:
         raise SystemExit(f"prompt {x.get('id')}: prompt ids do not start with bank strip_prefix {sp}")
-    return entry["key"], str(Path(bank["dir"]) / entry["file"]), sp
+    return kv.format_kv_key(hits), hits, sp
 
 
 def model_rules(text):
@@ -590,7 +602,8 @@ def load(path, tok):
             raise SystemExit(f"the open line names a head of {file} (none when none of its classes has a head): {head!r}")
     if R["kv"]:
         from . import kv
-        R["kv"] = kv.load_bank(R["kv"], tok)
+        bank_dir, max_match = R["kv"]
+        R["kv"] = (kv.load_bank(bank_dir, tok), max_match)
     import mlx.core as mx
     moves = R["moves"]
     vectors = {}
