@@ -1,12 +1,14 @@
 """Compiled Fact-KV Routing (KV-A): compile per-fact system-prefix KV caches from a standalone rules DSL and inject the matching
-cache at greedy decoding time (MLX, tier 1). When a prompt's `data` matches no fact (or ties), no cache is injected and decoding runs
-unchanged (`events=[]`); when a fact matches, only the prompt tokens after the shared prefix (no knowledge text) are fed with the
-compiled cache, recording event `0`. Check with `kestrom-verify compare events`.
+cache at greedy decoding time (MLX, tier 1). When a prompt's `data` matches no fact (or ties), no cache is injected and the kv line records
+no event (where no other line acts, decoding runs unchanged: `events=[]`); when a fact matches, only the prompt tokens after the
+shared prefix (no knowledge text) are fed with the compiled cache, recording event `0`. Check with `kestrom-verify compare events`.
+`kestrom generate` refuses a bank whose `rules.dsl` or cache files are not the ones its `manifest.json` hashed, or whose model
+fingerprint (hashes of the model's config and tokenizer files, and the sizes of its `.safetensors` shards) is not the model's.
   kestrom kv compile MODEL RULES.dsl FACTS.json OUT_DIR [PREV_DIR]
       compile one `.safetensors` prefix KV file per entry in FACTS.json into OUT_DIR, together with `rules.dsl` and
       `manifest.json`. FACTS.json is either `{CLASS: TEXT, ...}` (for single-head rules) or a list of `{"key": ..., "when": CLASS |
-      {HEAD: CLASS, ...}, "text": ...}`. With PREV_DIR, unchanged `prefix_ids` for the same model fingerprint are copied without
-      recomputing. Use from `kestrom generate --rules` via a `kv: BANK_DIR` line."""
+      {HEAD: CLASS, ...}, "text": ...}`. With PREV_DIR, entries whose key and `prefix_ids` are unchanged for the same model fingerprint are
+      copied without recomputing. Use from `kestrom generate --rules` via a `kv: BANK_DIR` line."""
 import hashlib
 import json
 import shutil
@@ -33,6 +35,11 @@ def sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
+def check_file(path: Path, sha: str, where):
+    if not path.is_file() or sha256_file(path) != sha:
+        raise SystemExit(f"{where}: missing or changed file {path.name} (its hash is not the one in manifest.json)")
+
+
 def entry_filename(key: str) -> str:
     """Deterministic cache filename inside the KV bank folder."""
     return f"{hashlib.sha256(key.encode('utf-8')).hexdigest()[:16]}.safetensors"
@@ -41,7 +48,7 @@ def entry_filename(key: str) -> str:
 def _canonical_when(when):
     if isinstance(when, str):
         return ("str", when)
-    if isinstance(when, dict) and when and all(isinstance(k, str) and k and isinstance(v, str) and v for k, v in when.items()):
+    if isinstance(when, dict) and when and all(isinstance(k, str) and isinstance(v, str) and v for k, v in when.items()):
         return tuple(sorted(when.items()))
     return None
 
@@ -91,6 +98,7 @@ def parse_facts(raw, R):
 
 def model_fingerprint(model_dir: Path) -> dict:
     """Fast deterministic fingerprint of MODEL (metadata hashes + safetensors shard sizes)."""
+    model_dir = Path(model_dir)
     meta = {name: sha256_file(p) for name in META_FILES if (p := model_dir / name).is_file()}
     shards = sorted([p.name, p.stat().st_size] for p in model_dir.glob("*.safetensors") if p.is_file())
     return {"meta": meta, "shards": shards}
@@ -176,7 +184,7 @@ def compile(model_dir, rules_file, facts_file, out_dir, prev_dir=None):
         if pm.get("fingerprint") != fp:
             raise SystemExit(f"{prev_dir}: model fingerprint differs from {model_dir}")
         for e in pm.get("entries", []):
-            prev_by_prefix[tuple(e["prefix_ids"])] = (prev_path / e["file"], e["cache_sha256"])
+            prev_by_prefix[(e["key"], tuple(e["prefix_ids"]))] = (prev_path / e["file"], e["cache_sha256"])
 
     from mlx_lm import load
 
@@ -198,11 +206,10 @@ def compile(model_dir, rules_file, facts_file, out_dir, prev_dir=None):
     for entry, pfx in tokenized:
         fname = entry_filename(entry["key"])
         dst = out_path / fname
-        pkey = tuple(pfx)
+        pkey = (entry["key"], tuple(pfx))
         if pkey in prev_by_prefix:
             src, prev_sha = prev_by_prefix[pkey]
-            if not src.is_file() or sha256_file(src) != prev_sha:
-                raise SystemExit(f"{prev_dir}: corrupted or missing cache file {src}")
+            check_file(src, prev_sha, prev_dir)
             shutil.copyfile(src, dst)
             reused += 1
         else:
@@ -232,7 +239,7 @@ def compile(model_dir, rules_file, facts_file, out_dir, prev_dir=None):
 
 
 def load_bank(bank_dir, tok=None) -> dict:
-    """Load and validate a compiled KV bank directory."""
+    """Load a compiled KV bank directory, refusing it where rules.dsl or a cache file is not the one manifest.json hashed."""
     bpath = Path(bank_dir)
     mpath = bpath / "manifest.json"
     rpath = bpath / "rules.dsl"
@@ -241,11 +248,11 @@ def load_bank(bank_dir, tok=None) -> dict:
     m = json.loads(mpath.read_text(encoding="utf-8"))
     if m.get("format") != FORMAT:
         raise SystemExit(f"{bank_dir}: unsupported KV bank format {m.get('format')!r}")
+    check_file(rpath, m.get("rules_sha256"), bank_dir)
     R = rules.standalone(str(rpath))
     entries = m.get("entries", [])
     for e in entries:
-        if not (bpath / e["file"]).is_file():
-            raise SystemExit(f"{bank_dir}: missing cache file {e['file']}")
+        check_file(bpath / e["file"], e.get("cache_sha256"), bank_dir)
     sp = m.get("strip_prefix", [])
     if tok is not None and len(sp) == 1 and getattr(tok, "bos_token_id", None) is not None and sp[0] != tok.bos_token_id:
         raise SystemExit(f"{bank_dir}: bank strip_prefix {sp} does not match tokenizer bos_token_id {tok.bos_token_id}")

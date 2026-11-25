@@ -85,6 +85,10 @@ def test_parse_facts_single_and_multi_head(tmp_path):
         {"key": "m/light", "when": {"meter": "light"}, "text": "LED lighting."},
     ], R2)
     assert len(multi) == 2 and multi[0]["when"] == {"meter": "ac"}
+    p_mixed = tmp_path / "mixed.dsl"
+    p_mixed.write_text(ROUTER_DSL.replace("out meter/light:", "out light:"), encoding="utf-8")
+    mixed = kv.parse_facts([{"key": "l", "when": {"": "light"}, "text": "LED lighting."}], rules.standalone(str(p_mixed)))
+    assert mixed[0]["when"] == {"": "light"}  # a class with no head among headed ones
 
     bad_cases = [
         ([], R1),
@@ -156,12 +160,22 @@ def test_kv_line_parsing_and_kv_for(tmp_path):
     (bank_dir / "manifest.json").write_text(json.dumps({
         "format": kv.FORMAT,
         "fingerprint": {},
-        "rules_sha256": "x",
+        "rules_sha256": kv.sha256_file(bank_dir / "rules.dsl"),
         "strip_prefix": [2],
-        "entries": [{"key": "ac", "when": "ac", "text": "fact", "file": "a.safetensors"}],
+        "entries": [{"key": "ac", "when": "ac", "text": "fact", "file": "a.safetensors", "cache_sha256": kv.sha256_bytes(b"cache-a")}],
     }), encoding="utf-8")
     (tmp_path / "use_real.dsl").write_text(f"kv: {bank_dir}\n", encoding="utf-8")
+    assert kv.load_bank(str(bank_dir), MockTok(bos=2))["entries"][0]["key"] == "ac"
+    with pytest.raises(SystemExit):
+        kv.load_bank(str(bank_dir), MockTok(bos=99))
+    for name, changed in (("a.safetensors", b"cache-b"), ("rules.dsl", SINGLE_DSL.replace("空調", "冷房").encode("utf-8"))):
+        before = (bank_dir / name).read_bytes()
+        (bank_dir / name).write_bytes(changed)
+        with pytest.raises(SystemExit):
+            kv.load_bank(str(bank_dir), MockTok(bos=2))  # a bank whose files are not the ones manifest.json hashed is refused
+        (bank_dir / name).write_bytes(before)
 
+    pytest.importorskip("mlx")
     try:
         rules.SIDE.clear()
         rules.SIDE.update(rules.load(str(tmp_path / "use_real.dsl"), MockTok(bos=2)))
@@ -171,8 +185,6 @@ def test_kv_line_parsing_and_kv_for(tmp_path):
             rules.kv_for({"id": 3}, [2, 20, 30])
         with pytest.raises(SystemExit):
             rules.kv_for({"id": 4, "data": {"text": "空調について"}}, [9, 20, 30])
-        with pytest.raises(SystemExit):
-            kv.load_bank(str(bank_dir), MockTok(bos=99))
     finally:
         rules.SIDE.clear()
 
@@ -215,19 +227,28 @@ def test_compile_deterministic_and_incremental_reuse(tmp_path, monkeypatch):
     with pytest.raises(SystemExit):
         kv.compile(str(model_dir), str(rules_file), str(facts2), str(bank2))  # non-empty out_dir refused
 
+    calls.clear()
+    facts3 = tmp_path / "facts3.json"
+    facts3.write_text(json.dumps([{"key": "ac2", "when": "ac", "text": "AC old"}, {"key": "light", "when": "light", "text": "Light old"}]), encoding="utf-8")
+    kv.compile(str(model_dir), str(rules_file), str(facts3), str(tmp_path / "bank3"), prev_dir=str(bank1))
+    assert [k for k, _ in calls] == ["ac2"]  # a renamed key is compiled afresh, so the file holds its own key
+
 
 def test_decode_with_kv_passes_kestrom_verify_compare_events(tmp_path, monkeypatch):
     pytest.importorskip("mlx")
+    model_dir = tmp_path / "model"
+    model_dir.mkdir()
+    (model_dir / "tokenizer.json").write_text("{}", encoding="utf-8")
     bank_dir = tmp_path / "bank"
     bank_dir.mkdir()
     (bank_dir / "rules.dsl").write_text(SINGLE_DSL, encoding="utf-8")
     (bank_dir / "ac.safetensors").write_bytes(b"fake-cache")
     (bank_dir / "manifest.json").write_text(json.dumps({
         "format": kv.FORMAT,
-        "fingerprint": {},
-        "rules_sha256": "x",
+        "fingerprint": kv.model_fingerprint(model_dir),
+        "rules_sha256": kv.sha256_file(bank_dir / "rules.dsl"),
         "strip_prefix": [2],
-        "entries": [{"key": "ac", "when": "ac", "text": "30kW", "file": "ac.safetensors"}],
+        "entries": [{"key": "ac", "when": "ac", "text": "30kW", "file": "ac.safetensors", "cache_sha256": kv.sha256_bytes(b"fake-cache")}],
     }), encoding="utf-8")
     use_dsl = tmp_path / "use.dsl"
     use_dsl.write_text(f"kv: {bank_dir}\n", encoding="utf-8")
@@ -254,10 +275,6 @@ def test_decode_with_kv_passes_kestrom_verify_compare_events(tmp_path, monkeypat
         for t in seq[:max_tokens]:
             yield t, None
 
-    model_dir = tmp_path / "model"
-    model_dir.mkdir()
-    (model_dir / "tokenizer.json").write_text("{}", encoding="utf-8")
-
     class FakeTrunk:
         pass
 
@@ -283,7 +300,12 @@ def test_decode_with_kv_passes_kestrom_verify_compare_events(tmp_path, monkeypat
     prompts_file.write_text(json.dumps(prompts, ensure_ascii=False), encoding="utf-8")
 
     out_kv = tmp_path / "kv.jsonl"
+    other_model = tmp_path / "other_model"
+    other_model.mkdir()
+    (other_model / "tokenizer.json").write_text('{"other": 1}', encoding="utf-8")
     try:
+        with pytest.raises(SystemExit):  # a bank compiled for another model is refused
+            generate.run(str(other_model), str(prompts_file), str(out_kv), max_tokens=16, rules_file=str(use_dsl))
         generate.run(str(model_dir), str(prompts_file), str(out_kv), max_tokens=16, rules_file=str(use_dsl))
     finally:
         rules.SIDE.clear()
@@ -309,6 +331,7 @@ def test_decode_with_kv_passes_kestrom_verify_compare_events(tmp_path, monkeypat
 
 def test_compact_cache_roundtrip_with_mlx():
     mx = pytest.importorskip("mlx.core")
+    pytest.importorskip("mlx_lm")
     from mlx_lm.models.cache import KVCache, load_prompt_cache, save_prompt_cache
     import tempfile
 
