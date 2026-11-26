@@ -102,7 +102,8 @@ a name in an h1 line: declared by an `in` line, or else read by a probe (by run,
                                              cache), feeds only the prompt tokens after the shared prefix (zero knowledge text in the
                                              prompt), and records event 0; otherwise no cache is injected and the kv line records no
                                              event. Any `in NAME: prompt FILE LAYER` conditions in the same rules are evaluated on the full prompt
-                                             without the fact cache before decoding and passed as 0/1 `values` to the KV bank's rules (`"data"`
+                                             without the fact cache before decoding and passed as 0/1 `values` to the KV bank's rules (to the
+                                             last step of "steps": earlier steps give their own; values given in "data" win; `"data"`
                                              may be omitted when the bank reads only those prompt inputs). OUT records "kv" as the matched entry key (list when >=2) or null. One kv line at most
 """
 import ast
@@ -561,8 +562,9 @@ def opening(x):
     return None if c is None else (c + "\n", starts, text.replace("{}", c) + "\n" if text else None)
 
 
-def _with_prompt_values(data, prompt_on):
-    """Merge prompt condition readings {name: bool} as 0/1 `values` into `data` without mutating it."""
+def with_prompt_values(data, prompt_on):
+    """Lay prompt condition readings {name: bool} as 0/1 `values` under the values of `data` (of its last step with "steps"), without
+    mutating it."""
     prompt_vals = {name: int(bool(on)) for name, on in prompt_on.items()}
     if not prompt_vals:
         return data
@@ -580,13 +582,9 @@ def kv_for(x, ids):
     prompt_on = SIDE.get("prompt_on") or {}
     from . import kv
     bank, max_match = SIDE["kv"]
-    if "data" in x:
-        data = _with_prompt_values(x["data"], prompt_on)
-    elif prompt_on and not any(s[0] in ("match", "count", "number") for s in bank["rules"]["declared"].values()):
-        data = {"values": {k: int(bool(v)) for k, v in prompt_on.items()}}
-    else:
+    if "data" not in x and (not prompt_on or any(s[0] in ("match", "count", "number") for s in bank["rules"]["declared"].values())):
         raise SystemExit(f"prompt {x.get('id')}: a kv line reads the prompt's \"data\"")
-    hits = kv.match_entries(bank, data, max_match)
+    hits = kv.match_entries(bank, dict(with_prompt_values(x.get("data", {}), prompt_on), id=x.get("id")), max_match)
     if not hits:
         return None
     sp = bank["strip_prefix"]
@@ -609,6 +607,14 @@ def layer_row(file, key, layer):
     if not np.any(v):
         raise SystemExit(f"{file} has no {key} at layer {layer}: a kestrom bridge map output holds only the layers it printed")
     return v
+
+
+def prompt_conditions(R):
+    """The files of R's `in NAME: prompt FILE LAYER` lines, {FILE: its arrays}, each LAYER checked by layer_row."""
+    specs = [s for s in R["declared"].values() if s[0] == "prompt"]
+    for _, file, layer in specs:
+        layer_row(file, "cond", layer)
+    return {file: dict(np.load(file)) for _, file, _ in specs}
 
 
 def load(path, tok):
@@ -634,9 +640,7 @@ def load(path, tok):
     import mlx.core as mx
     moves = R["moves"]
     vectors = {}
-    for spec in R["declared"].values():
-        if spec[0] == "prompt":
-            layer_row(spec[1], "cond", spec[2])
+    conditions = prompt_conditions(R)
     for file, layer, ts in R["adds"]:
         d = layer_row(file, "direction", layer)
         vectors.setdefault(layer, []).extend((mx.array(w * d / np.linalg.norm(d)).astype(mx.bfloat16), u) for u, w in ts)
@@ -645,8 +649,7 @@ def load(path, tok):
     return dict(R, net={key: mx.array(v) for key, v in R["net"].items()} if has_units else None, P=None if P is None else mx.array(P),
                 tokens=mx.array(token_ids(tok, R["tokens"])) if R["tokens"] else None, k=k,
                 moves=[mx.array(token_ids(tok, col)) for col in ([x for x, _, _ in moves], [y for _, y, _ in moves])] + [mx.array([u for _, _, u in moves])] if moves else None,
-                bans=[(mx.array(token_ids(tok, ts)), u) for ts, u in R["bans"]], adds=vectors, think=think, tok=tok,
-                conditions={file: dict(np.load(file)) for spec in R["declared"].values() if spec[0] == "prompt" for file in [spec[1]]})
+                bans=[(mx.array(token_ids(tok, ts)), u) for ts, u in R["bans"]], adds=vectors, think=think, tok=tok, conditions=conditions)
 
 
 def start(model, ids):

@@ -689,7 +689,6 @@ def test_generate_multi_match_passes_kestrom_verify(tmp_path, monkeypatch):
 
 
 def test_kv_prompt_probe_routing_and_hybrid_precedence(tmp_path):
-    pytest.importorskip("mlx")
     import numpy as np
 
     pure_dsl = tmp_path / "pure.dsl"
@@ -722,6 +721,10 @@ def test_kv_prompt_probe_routing_and_hybrid_precedence(tmp_path):
         assert rules.kv_for({"id": "p0"}, [2, 20, 21])[0] == "science"
         assert rules.kv_for({"id": "p1", "data": {"values": {"p_sci": 0}}}, [2, 20, 21]) is None
         assert rules.kv_for({"id": "p2", "data": {"steps": [{"values": {"extra": 1}}]}}, [2, 20, 21])[0] == "science"
+        # The reading goes to the last step; an earlier step gives its own, or the run names the prompt and the input
+        assert rules.kv_for({"id": "p4", "data": {"steps": [{"values": {"p_sci": 0}}, {}]}}, [2, 20, 21])[0] == "science"
+        with pytest.raises(SystemExit, match="entry p5: no value for p_sci"):
+            rules.kv_for({"id": "p5", "data": {"steps": [{}, {}]}}, [2, 20, 21])
         rules.SIDE["prompt_on"] = {"p_sci": False}
         assert rules.kv_for({"id": "p3"}, [2, 20, 21]) is None
 
@@ -810,3 +813,6 @@ def test_kv_prompt_probe_routing_and_hybrid_precedence(tmp_path):
     assert t2["kv"] == "science" and t2["cache_action"] == "reuse" and t2["probes"] == {"p_sci": 0}
     assert t3["kv"] is None and t3["cache_action"] == "switch" and t3["probes"] == {"p_sci": 0}
     assert len(seen_calls) == 4 and all(layer == 2 for _, layer in seen_calls)
+    # An explicit `values` replaces those of `data`, with the probe readings under it
+    sess.turn("Python set?", values={"b": 0}, data={"text": "Python set?", "values": {"a": 1}})
+    assert sess.steps[-1]["values"] == {"p_sci": 0, "b": 0}

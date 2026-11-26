@@ -20,15 +20,14 @@ When a rules file combines `kv:` with `in NAME: prompt FILE LAYER` conditions, `
       given), they are composed via the in-memory LRU cache. With TURNS.json (`["turn1", ...]` or `[{"user": ..., "values": ..., "data": ..., "reset": ...}]`; pass `-` or `none` when passing PROBES.dsl interactively),
       writes one JSONL row per turn to OUT.jsonl; without TURNS.json, runs an interactive session (/reset, /status, /quit).
       With PROBES.dsl (a rules file containing `in NAME: prompt FILE LAYER` lines, e.g. from `kestrom bridge map`), each user turn
-      evaluates those prompt conditions on the raw turn before matching and passes them as 0/1 `values` to the bank's rules."""
+      evaluates those prompt conditions on the raw turn before matching and passes them as 0/1 `values` to the bank's rules (the turn's
+      own `values` win)."""
 from collections import OrderedDict
 import hashlib
 import json
 import shutil
 import tempfile
 from pathlib import Path
-
-import numpy as np
 
 from kestrom_verify import report
 
@@ -404,18 +403,13 @@ def load_prompt_probes(probes_file: str) -> dict:
     if any(k not in ("in", "kv") for k, _, _ in raw_lines):
         raise SystemExit(f"{probes_file}: PROBES.dsl allows only `in NAME: prompt FILE LAYER` (and optional `kv:`) lines")
     R = rules.compile_rules(text)
-    probes, loaded = {}, {}
     for name, spec in R["declared"].items():
         if spec[0] != "prompt":
             raise SystemExit(f"{probes_file}: unsupported `in` kind {spec[0]!r} for {name!r} (only `prompt` is allowed)")
-        _, path, layer = spec
-        rules.layer_row(path, "cond", layer)
-        if path not in loaded:
-            loaded[path] = dict(np.load(path))
-        probes[name] = (loaded[path], layer)
-    if not probes:
+    if not R["declared"]:
         raise SystemExit(f"{probes_file}: needs at least one `in NAME: prompt FILE LAYER` line")
-    return probes
+    loaded = rules.prompt_conditions(R)
+    return {name: (loaded[path], layer) for name, (_, path, layer) in R["declared"].items()}
 
 
 class KVSession:
@@ -473,19 +467,13 @@ class KVSession:
     def turn(self, user_text: str, values: dict | None = None, data: dict | None = None) -> dict:
         """Advance one user turn, keeping active KV state incrementally or switching/composing on topic changes."""
         step = dict(data) if data is not None else {"text": user_text}
+        if values is not None:
+            step["values"] = values
         probe_vals = None
         if self.prompt_probes:
             turn_ids = _chat_messages_ids(self.tok, [{"role": "user", "content": user_text}], enable_thinking=self.enable_thinking)
             probe_vals = {name: int(bool(self._probe(turn_ids, npz, layer))) for name, (npz, layer) in self.prompt_probes.items()}
-        merged_vals = {}
-        if probe_vals:
-            merged_vals.update(probe_vals)
-        if isinstance(step.get("values"), dict):
-            merged_vals.update(step["values"])
-        if values is not None:
-            merged_vals.update(values)
-        if merged_vals:
-            step["values"] = merged_vals
+            step = rules.with_prompt_values(step, probe_vals)
         self.steps.append(step)
         hits = match_entries(self.bank, {"steps": list(self.steps)}, self.max_match)
         self.messages.append({"role": "user", "content": user_text})
