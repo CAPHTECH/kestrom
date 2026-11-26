@@ -81,6 +81,31 @@ def test_map_arrays_rms_norm_and_closed_form_threshold():
     mapped_cal = bridge.map_arrays(br, {"direction": st_dir, "cond": st_cond, "threshold": st_thr}, calib_means={lb: Zb[180:]})
     assert abs(float(mapped_cal["threshold"][lb]) - float(np.median(Zb[180:] @ mapped_cal["cond"][lb]))) < 1e-5
 
+    # A steer file of another model (other layer count) is refused
+    with pytest.raises(SystemExit):
+        bridge.map_arrays(br, {"direction": st_dir[:-1], "cond": st_cond[:-1], "threshold": st_thr[:-1]})
+    # RECIPIENT without CALIB_PROMPTS is refused before anything is loaded
+    with pytest.raises(SystemExit):
+        bridge.map_steer("unused.npz", "unused.npz", "unused.npz", recip_dir="model")
+
+
+def test_rules_refuse_unmapped_layer(tmp_path):
+    from kestrom import rules
+    p = tmp_path / "mapped.npz"
+    d = np.zeros((4, 3), np.float32)
+    d[2] = 1.0
+    np.savez(p, direction=d, cond=d)
+    assert rules.layer_row(str(p), "direction", 2)[0] == 1.0
+    with pytest.raises(SystemExit):
+        rules.layer_row(str(p), "direction", 1)
+    with pytest.raises(SystemExit):
+        rules.layer_row(str(p), "cond", 3)
+
+
+def test_degenerate_anchors_refused():
+    with pytest.raises(SystemExit):
+        bridge.fit_procrustes(np.ones((5, 4)), np.ones((5, 3)))
+
 
 def test_chain_bridges_and_roundtrip(tmp_path):
     rng = np.random.default_rng(19)
@@ -126,6 +151,13 @@ def test_parse_layers_and_tuple_safe_steer_install():
     assert bridge.parse_layers("17:22,20:26", 32, 42) == [(17, 22), (20, 26)]
     with pytest.raises(SystemExit):
         bridge.parse_layers("99:1", 32, 42)
+    # Each layer of either model in at most one pair: map and chain index by layer
+    with pytest.raises(SystemExit):
+        bridge.parse_layers("17:22,20:22", 32, 42)
+    with pytest.raises(SystemExit):
+        bridge.parse_layers("17:22,17:26", 32, 42)
+    small = bridge.default_layer_pairs(40, 8)
+    assert len({a for a, _ in small}) == len(small) == len({b for _, b in small})
 
     class ArrayLayer:
         def __call__(self, x):

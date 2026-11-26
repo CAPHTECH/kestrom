@@ -2,14 +2,16 @@
 with RMS scale matching (zero target labels; check the recipient outputs with kestrom-verify compare events).
   kestrom bridge fit DONOR RECIPIENT ANCHORS.json OUT.npz [LAYERS] [RANK]
       fit orthogonal subspace Procrustes maps on sequence-mean hidden states of ANCHORS (strings, {"text"}, {"prompt"}, or {"ids"}).
-      LAYERS: "auto" (6 depth-aligned layer pairs at 25%-72% depth) or comma pairs "17:22,20:26". RANK: optional SVD rank cap.
+      LAYERS: "auto" (up to 6 depth-aligned layer pairs at 25%-72% depth) or comma pairs "17:22,20:26"; each layer of either model
+      appears in at most one pair. RANK: optional SVD rank cap.
   kestrom bridge map BRIDGE.npz DONOR_STEER.npz OUT.npz [RECIPIENT CALIB_PROMPTS.json]
       map a donor kestrom steer .npz (direction, cond, threshold) to recipient layers, with RMS-matched direction norms (printed as
-      recommended ALPHA for add lines) and closed-form thresholds (or median calibration over unlabeled CALIB_PROMPTS on RECIPIENT).
+      recommended ALPHA for add lines) and closed-form thresholds (or the median over unlabeled CALIB_PROMPTS on RECIPIENT, so the
+      condition fires on half of them: give a set balanced between prompts it should and should not fire on). OUT.npz holds the
+      printed mapped layers only: its other layers are zero, and kestrom generate refuses an add or in line on them.
   kestrom bridge chain BRIDGE_AB.npz BRIDGE_BC.npz OUT.npz
       compose A->B and B->C bridges in closed form on shared B layers without running B."""
 import gc
-import json
 
 import numpy as np
 
@@ -36,9 +38,11 @@ def fit_procrustes(Z_a, Z_b, rank=None):
 
     _, s_a, Vt_a = np.linalg.svd(Za_c, full_matrices=False)
     _, s_b, Vt_b = np.linalg.svd(Zb_c, full_matrices=False)
-    r_a = int(np.sum(s_a > 1e-6 * (s_a[0] if len(s_a) and s_a[0] > 0 else 1.0)))
-    r_b = int(np.sum(s_b > 1e-6 * (s_b[0] if len(s_b) and s_b[0] > 0 else 1.0)))
-    r = max(1, min(r_a, r_b, int(rank) if rank is not None else min(r_a, r_b)))
+    r_a = int(np.sum(s_a > 1e-6 * s_a[0]))
+    r_b = int(np.sum(s_b > 1e-6 * s_b[0]))
+    r = min(r_a, r_b, int(rank) if rank is not None else min(r_a, r_b))
+    if r < 1:
+        raise SystemExit("bridge fit needs anchors whose hidden states differ in both models (and RANK >= 1)")
 
     V_a = Vt_a[:r].T
     V_b = Vt_b[:r].T
@@ -54,26 +58,25 @@ def fit_procrustes(Z_a, Z_b, rank=None):
     else:
         denom = float(np.linalg.norm(Z_ar, "fro"))
         numer = float(np.linalg.norm(Z_br, "fro"))
-    scale = numer / denom if denom > 1e-12 else 1.0
+    scale = numer / denom
     rms_a = float(np.sqrt(np.mean(np.sum(Za_c * Za_c, axis=1))))
     rms_b = float(np.sqrt(np.mean(np.sum(Zb_c * Zb_c, axis=1))))
     return dict(mu_a=mu_a, mu_b=mu_b, M=M, scale=scale, rms_a=rms_a, rms_b=rms_b, rank=r)
 
 
 def default_layer_pairs(n_a, n_b):
-    """6 depth-aligned layer pairs across 25%-72% of model depth, deduplicated in order."""
-    seen, pairs = set(), []
+    """Up to 6 depth-aligned layer pairs across 25%-72% of model depth, in order, skipping a pair that reuses a layer of either model."""
+    pairs = []
     for f in DEPTH_FRACS:
         la = min(max(0, round(f * n_a)), n_a - 1)
         lb = min(max(0, round(f * n_b)), n_b - 1)
-        if (la, lb) not in seen:
-            seen.add((la, lb))
+        if all(la != a and lb != b for a, b in pairs):
             pairs.append((la, lb))
     return pairs
 
 
 def parse_layers(spec, n_a, n_b):
-    """Parse layer pairs '17:22,20:26' or 'auto'/None."""
+    """Parse layer pairs '17:22,20:26' or 'auto'/None; a layer of either model appears in at most one pair (map and chain index by it)."""
     if spec is None or str(spec).lower() in ("auto", "none", ""):
         return default_layer_pairs(n_a, n_b)
     pairs = []
@@ -84,6 +87,8 @@ def parse_layers(spec, n_a, n_b):
         la, lb = int(a), int(b)
         if not (0 <= la < n_a and 0 <= lb < n_b):
             raise SystemExit(f"layer pair {la}:{lb} out of bounds for ({n_a}, {n_b})")
+        if any(la == a or lb == b for a, b in pairs):
+            raise SystemExit(f"layer pair {la}:{lb} reuses a layer of an earlier pair")
         pairs.append((la, lb))
     return pairs
 
@@ -116,28 +121,13 @@ def encode_prompts(tok, raw_items):
 def capture_layers(model, ids_list, layers_idx):
     """Capture sequence-mean residual activations [N, K, D] (float64) at selected layers in one pass per sequence."""
     import mlx.core as mx
-    from .rows import trunk
 
-    layers = model.layers
-    t = trunk(model)
-    buf = {}
-    uniq = sorted(set(layers_idx))
-    slot_of = {li: s for s, li in enumerate(uniq)}
-    kept = [steer.HOOKS.get(id(layers[li])) for li in uniq]
     rows_out = []
-    try:
-        for li in uniq:
-            s = slot_of[li]
-            steer.install(layers[li], lambda h, s=s: (buf.__setitem__(s, h), h)[1])
-        for ids in ids_list:
-            buf.clear()
-            t(mx.array([ids]))
-            vecs = mx.stack([mx.mean(buf[slot_of[li]][0].astype(mx.float32), axis=0) for li in layers_idx])
-            mx.eval(vecs)
-            rows_out.append(np.array(vecs, dtype=np.float64))
-    finally:
-        for li, fn in zip(uniq, kept):
-            steer.install(layers[li], fn)
+    for ids in ids_list:
+        outs = steer.capture(model, ids)
+        vecs = mx.stack([mx.mean(outs[li][0].astype(mx.float32), axis=0) for li in layers_idx])
+        mx.eval(vecs)
+        rows_out.append(np.array(vecs, dtype=np.float64))
     return np.stack(rows_out)
 
 
@@ -146,16 +136,13 @@ def fit(donor_dir, recip_dir, anchors_file, out_npz, layers=None, rank=None):
     from mlx_lm import load
     import mlx.core as mx
 
-    raw = json.loads(open(anchors_file, encoding="utf-8").read())
+    raw = report.read(anchors_file)
     r_cap = None if rank is None or str(rank).lower() == "none" else int(rank)
-    spec_none = layers is None or str(layers).lower() in ("auto", "none", "")
 
     donor, tok_a = load(str(donor_dir))
     n_a = len(donor.layers)
-    if spec_none:
-        d_layers_uniq = sorted({min(max(0, round(f * n_a)), n_a - 1) for f in DEPTH_FRACS})
-    else:
-        d_layers_uniq = sorted({la for la, _ in parse_layers(layers, n_a, 10**6)})
+    # Every donor layer the pairs can use: the recipient's layer count is known only once it is loaded.
+    d_layers_uniq = sorted({la for la, _ in parse_layers(layers, n_a, 10**6)})
     ids_a = encode_prompts(tok_a, raw)
     Z_a_uniq = capture_layers(donor, ids_a, d_layers_uniq)
     d_a = Z_a_uniq.shape[-1]
@@ -210,6 +197,9 @@ def fit(donor_dir, recip_dir, anchors_file, out_npz, layers=None, rank=None):
 
 def map_arrays(bridge, st, calib_means=None):
     """Map donor steer arrays {direction, cond, threshold} into recipient space with RMS scaling."""
+    donor_shape = (int(bridge["donor_num_layers"]), int(bridge["donor_dim"]))
+    if st["direction"].shape != donor_shape or st["cond"].shape != donor_shape:
+        raise SystemExit(f"DONOR_STEER is {st['direction'].shape}, but the bridge's donor model has (layers, width) {donor_shape}")
     n_b = int(bridge["recip_num_layers"])
     d_b = int(bridge["recip_dim"])
     direction = np.zeros((n_b, d_b), np.float32)
@@ -232,15 +222,15 @@ def map_arrays(bridge, st, calib_means=None):
         n_va = float(np.linalg.norm(v_a))
         v_raw = v_a @ M.T
         n_vraw = float(np.linalg.norm(v_raw))
-        tgt_norm = (n_va / ra) * rb if ra > 1e-12 else sc * n_vraw
-        v_rms = v_raw * (tgt_norm / n_vraw) if n_vraw > 1e-12 else v_raw
+        tgt_norm = (n_va / ra) * rb
+        v_rms = v_raw * (tgt_norm / n_vraw)
         direction[lb] = v_rms.astype(np.float32)
         rms_norm[lb] = np.float32(tgt_norm)
 
         c_a = st["cond"][la].astype(np.float64)
         c_raw = c_a @ M.T
         n_craw = float(np.linalg.norm(c_raw))
-        c_unit = c_raw / n_craw if n_craw > 1e-12 else c_raw
+        c_unit = c_raw / n_craw
         cond[lb] = c_unit.astype(np.float32)
 
         if calib_means is not None and lb in calib_means:
@@ -248,7 +238,7 @@ def map_arrays(bridge, st, calib_means=None):
         else:
             t_a = float(st["threshold"][la])
             # Exact closed-form transform of hyperplane h_b @ c_unit > thresh from h_b = mu_b + sc * ((h_a - mu_a) @ M.T)
-            t_b = float(mu_b @ c_unit) + (sc / n_craw if n_craw > 1e-12 else sc) * (t_a - float(mu_a @ c_a))
+            t_b = float(mu_b @ c_unit) + sc / n_craw * (t_a - float(mu_a @ c_a))
             threshold[lb] = np.float32(t_b)
 
     return dict(
@@ -262,12 +252,12 @@ def map_arrays(bridge, st, calib_means=None):
 
 def map_steer(bridge_npz, donor_steer_npz, out_npz, recip_dir=None, calib_prompts=None):
     """Map DONOR_STEER.npz across BRIDGE.npz into recipient OUT.npz (optionally calibrating thresholds on unlabeled prompts)."""
-    br = np.load(bridge_npz)
-    st = np.load(donor_steer_npz)
+    if (recip_dir is None) != (calib_prompts is None):
+        raise SystemExit("give RECIPIENT and CALIB_PROMPTS together, or neither (closed-form thresholds)")
+    br = dict(np.load(bridge_npz))
+    st = dict(np.load(donor_steer_npz))
     calib_means = None
     if calib_prompts is not None:
-        if recip_dir is None:
-            raise SystemExit("CALIB_PROMPTS requires RECIPIENT model path")
         from mlx_lm import load
         recip, tok = load(str(recip_dir))
         raw = report.read(calib_prompts)
@@ -337,7 +327,7 @@ def chain_bridges(ab, bc):
 
 def chain(bridge_ab, bridge_bc, out_npz):
     """Compose BRIDGE_AB and BRIDGE_BC on shared B layers into OUT.npz."""
-    ab, bc = np.load(bridge_ab), np.load(bridge_bc)
+    ab, bc = dict(np.load(bridge_ab)), dict(np.load(bridge_bc))
     out = chain_bridges(ab, bc)
     np.savez(out_npz, **out)
     for la, lc in zip(out["donor_layers"], out["recip_layers"]):

@@ -585,6 +585,14 @@ def model_rules(text):
     return R
 
 
+def layer_row(file, key, layer):
+    """Row LAYER of KEY in FILE.npz, which must not be zero (a layer kestrom bridge map did not map is zero)."""
+    v = np.load(file)[key][layer]
+    if not np.any(v):
+        raise SystemExit(f"{file} has no {key} at layer {layer}: a kestrom bridge map output holds only the layers it printed")
+    return v
+
+
 def load(path, tok):
     """SIDE for RULES.dsl (rules with no probed input) or FIT.npz (kestrom rules fit: the rules, the probes, K)."""
     if str(path).endswith(".npz"):
@@ -608,8 +616,11 @@ def load(path, tok):
     import mlx.core as mx
     moves = R["moves"]
     vectors = {}
+    for spec in R["declared"].values():
+        if spec[0] == "prompt":
+            layer_row(spec[1], "cond", spec[2])
     for file, layer, ts in R["adds"]:
-        d = np.load(file)["direction"][layer]
+        d = layer_row(file, "direction", layer)
         vectors.setdefault(layer, []).extend((mx.array(w * d / np.linalg.norm(d)).astype(mx.bfloat16), u) for u, w in ts)
     think = tuple(tok.convert_tokens_to_ids(s) if s in tok.get_vocab() else None for s in ("<think>", "</think>"))
     has_units = bool(R["used"] or R["adds"])
