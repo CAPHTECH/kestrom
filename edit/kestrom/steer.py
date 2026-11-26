@@ -35,7 +35,10 @@ def install(m, fn):
 
             def __call__(self, *args, **kwargs):
                 out = base.__call__(self, *args, **kwargs)
-                return HOOKS[id(self)](out) if id(self) in HOOKS else out
+                cb = HOOKS.get(id(self))
+                if cb is None:
+                    return out
+                return (cb(out[0]), *out[1:]) if isinstance(out, tuple) else cb(out)
         m.__class__ = Hooked
     HOOKS[id(m)] = fn
 
