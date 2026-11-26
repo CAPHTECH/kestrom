@@ -12,10 +12,29 @@ license-files = ["LICENSE", "LICENSE-POLYFORM-SMALL-BUSINESS.md", "LICENSE-POLYF
 requires-python = ">=3.10"
 dependencies = ["kestrom-verify", "numpy"]
 authors = [{ name = "CAPH TECH Inc." }]
+keywords = ["llm", "ai-security", "information-flow-control", "model-editing", "backdoor-detection"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "Intended Audience :: Science/Research",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+  "Topic :: Security",
+]
+
+[project.urls]
+Homepage = "https://github.com/CAPHTECH/kestrom"
+Repository = "https://github.com/CAPHTECH/kestrom"
+Issues = "https://github.com/CAPHTECH/kestrom/issues"
 
 [project.optional-dependencies]
 mlx = ["mlx", "mlx-lm", "transformers"]
+gguf = ["gguf", "transformers"]
 torch = ["torch", "transformers>=5", "safetensors"]
+cuda = ["torch", "transformers>=5", "safetensors", "bitsandbytes", "accelerate"]
 
 [project.scripts]
 kestrom = "kestrom.__main__:main"

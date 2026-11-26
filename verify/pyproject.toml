@@ -12,6 +12,23 @@ license = "Apache-2.0"
 requires-python = ">=3.10"
 dependencies = ["numpy"]
 authors = [{ name = "CAPH TECH Inc." }]
+keywords = ["llm", "verification", "ai-security", "model-audit", "safetensors", "gguf"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "Intended Audience :: Science/Research",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+  "Topic :: Security",
+]
+
+[project.urls]
+Homepage = "https://github.com/CAPHTECH/kestrom"
+Repository = "https://github.com/CAPHTECH/kestrom"
+Issues = "https://github.com/CAPHTECH/kestrom/issues"
 
 [project.optional-dependencies]
 mlx = ["mlx", "mlx-lm", "transformers"]

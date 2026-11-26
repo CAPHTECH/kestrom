@@ -34,9 +34,12 @@
   merge A B C LAMBDA DST                                weight arithmetic, A + LAMBDA (B - C) (tier 3)
   inspect {quant, base, shape, lens, behavior, trigger, gguf, mirror, disarm} ...
                                                         look for a backdoor in a delivered fine-tune (reads; base, gguf and disarm write a folder; tier 3)
+  audit MODEL_DIR OUT_DIR [BASE_DIR|none] [DECLARED.json|none] [MODE] [BITS] [GROUP] [RUNTIME]
+                                                        integrated acceptance audit (optional diff + mirror scan) writing
+                                                        deterministic audit.json, audit.html, and audit.sarif
 kestrom COMMAND --help prints the help of its module; every module's docstring has the details (python -m pydoc kestrom.generate, kestrom.kv, kestrom.bridge, kestrom.ifc, kestrom.rules, kestrom.steer, kestrom.loopguard,
 kestrom.rows, kestrom.trigger, kestrom.find, kestrom.mlp,
-kestrom.units, kestrom.train, kestrom.inspect, kestrom.mirror)."""
+kestrom.units, kestrom.train, kestrom.inspect, kestrom.mirror, kestrom.audit)."""
 import importlib
 import sys
 
@@ -54,7 +57,8 @@ COMMANDS = {"generate": ("generate", "main"), "kv": ("kv", {"compile": "compile"
                                "keyed": "keyed", "neuron-write": "neuron_write"}),
             "train": ("train", {"sft-data": "sft_data"}), "merge": ("train", "merge"),
             "inspect": ("inspect", {**{k: k for k in ("quant", "base", "shape", "lens", "behavior", "trigger", "gguf")},
-                                    "mirror": "mirror:mirror", "disarm": "mirror:disarm"})}
+                                    "mirror": "mirror:mirror", "disarm": "mirror:disarm"}),
+            "audit": ("audit", "audit")}
 
 
 def module(name):

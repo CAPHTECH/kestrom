@@ -5,7 +5,7 @@ after the shared prefix (no knowledge text) are fed with the compiled cache, rec
 entries match simultaneously, their texts are composed and prefilled once on demand and kept in an in-memory LRU cache. Check batch runs
 with `kestrom-verify compare events`.
 `kestrom generate` and `kestrom kv chat` refuse a bank whose `rules.dsl` or cache files are not the ones its `manifest.json` hashed, or
-whose model fingerprint (hashes of the model's config and tokenizer files, and the sizes of its `.safetensors` shards) is not the model's.
+whose model fingerprint (hashes of the model's config, tokenizer, and `.safetensors` shard files) is not the model's.
 When a rules file combines `kv:` with `in NAME: prompt FILE LAYER` conditions, `in ... prompt` is evaluated on the full prompt without the fact KV cache before decoding begins and passed as 0/1 `values` to the bank's rules.
   kestrom kv compile MODEL RULES.dsl FACTS.json OUT_DIR [PREV_DIR]
       compile one `.safetensors` prefix KV file per entry in FACTS.json into OUT_DIR, together with `rules.dsl` and
@@ -33,7 +33,7 @@ from kestrom_verify import report
 
 from . import rules
 
-FORMAT = "kestrom-kv-v1"
+FORMAT = "kestrom-kv-v2"
 PROBES = ("Hello.", "12345.")
 META_FILES = ("config.json", "tokenizer_config.json", "tokenizer.json", "chat_template.jinja", "model.safetensors.index.json")
 
@@ -112,10 +112,10 @@ def parse_facts(raw, R):
 
 
 def model_fingerprint(model_dir: Path) -> dict:
-    """Fast deterministic fingerprint of MODEL (metadata hashes + safetensors shard sizes)."""
+    """Deterministic fingerprint of MODEL (metadata hashes + safetensors shard sizes and SHA-256 hashes)."""
     model_dir = Path(model_dir)
     meta = {name: sha256_file(p) for name in META_FILES if (p := model_dir / name).is_file()}
-    shards = sorted([p.name, p.stat().st_size] for p in model_dir.glob("*.safetensors") if p.is_file())
+    shards = sorted([p.name, p.stat().st_size, sha256_file(p)] for p in model_dir.glob("*.safetensors") if p.is_file())
     return {"meta": meta, "shards": shards}
 
 

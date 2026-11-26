@@ -119,11 +119,16 @@ def diff(original, edited, declared=None):
     return out
 
 
-def main(original, edited, out, declared_file=None):
-    declared = report.read(declared_file) if declared_file else None
-    r = diff(original, edited, declared)
+def declared_diff(original, edited, declared_file=None):
+    """diff(...) against the declaration read from DECLARED_FILE, which the report names by its SHA-256."""
+    r = diff(original, edited, report.read(declared_file) if declared_file else None)
     if declared_file:
         r["declaration file"] = {Path(declared_file).name: report.sha(declared_file)}
+    return r
+
+
+def main(original, edited, out, declared_file=None):
+    r = declared_diff(original, edited, declared_file)
     t = r["diff"]
     print("tensors changed", t["tensors changed"], "of", t["tensors"], "| elements changed", t["changed elements"], "of", t["elements"],
           f"(and {t['tensors changed with no element count']} quantized tensors changed, counted in rows only)" if t["tensors changed with no element count"] else "",
