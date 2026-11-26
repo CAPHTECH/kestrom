@@ -261,3 +261,131 @@ def test_mirror_weight_only_and_disarm_nf4_on_synthetic_safetensors(tmp_path):
     rep_after = json.loads(out_after.read_text(encoding="utf-8"))
     assert rep_after["flagged"] == []
     assert "model.layers.1.mlp.down_proj.weight" in rep_after["on_grid"]
+
+
+def test_mirror_fp4_and_int8_benign_coherent_outlier_and_disarm(tmp_path):
+    from kestrom import mirror as km
+    from kestrom_verify import weights
+
+    def to_bf16_u16(x: np.ndarray) -> np.ndarray:
+        u32 = np.ascontiguousarray(x, dtype=np.float32).view(np.uint32)
+        return ((u32 + np.uint32(0x7FFF) + ((u32 >> 16) & np.uint32(1))) >> 16).astype(np.uint16)
+
+    rng = np.random.default_rng(41)
+    w_benign = (rng.standard_normal((128, 256)) * 0.05).astype(np.float32)
+
+    # 1. FP4 weights-space detection, unbiased stochastic rounding, and on_grid post-disarm check
+    wq_fp4, c_fp4, am_fp4 = km.fp4_quantize_numpy(w_benign, group_size=64)
+    st_fp4_b = km.analyze_residual(w_benign, wq_fp4, c_fp4, am_fp4, bits=4, group_size=64, seed=0, levels=km.FP4_LEVELS)
+    assert 0.90 <= st_fp4_b["rho1"] <= 1.10
+
+    sign_r1 = np.sign(rng.standard_normal((128, 1)) @ rng.standard_normal((1, 256))).astype(np.float32)
+    wg_b = w_benign.reshape(128, 4, 64)
+    am_full = np.repeat(am_fp4, 64, axis=1)
+    w_fp4_adv = np.where(
+        np.abs(wg_b) == am_fp4[:, :, None],
+        wg_b,
+        (wq_fp4 - 0.015 * am_full * sign_r1).reshape(128, 4, 64),
+    ).reshape(128, 256).astype(np.float32)
+    wq_fa, c_fa, am_fa = km.fp4_quantize_numpy(w_fp4_adv, group_size=64)
+    st_fp4_adv = km.analyze_residual(w_fp4_adv, wq_fa, c_fa, am_fa, bits=4, group_size=64, seed=0, levels=km.FP4_LEVELS)
+    assert st_fp4_adv["rho1"] > 2.0
+
+    acc_fp4 = np.zeros_like(w_benign, dtype=np.float64)
+    for s in range(400):
+        acc_fp4 += km.stochastic_round_fp4(w_benign, am_fp4, group_size=64, seed=s)
+    assert abs(float(np.mean(acc_fp4 / 400.0 - w_benign))) < 4e-4
+    wq_fp4_sr = km.stochastic_round_fp4(w_benign, am_fp4, group_size=64, seed=3)
+    wq_fp4_sr2, c_fp4_sr2, am_fp4_sr2 = km.fp4_quantize_numpy(wq_fp4_sr, group_size=64)
+    np.testing.assert_allclose(am_fp4_sr2, am_fp4, atol=1e-6)
+    np.testing.assert_allclose(wq_fp4_sr2, wq_fp4_sr, atol=1e-6)
+
+    # 2. INT8 row-wise detection (symmetric codes 0..254), outlier row collapse, unbiased SR, and safetensors E2E
+    wq_i8, c_i8, sc_i8 = km.int8_quantize_numpy(w_benign, group_size=0)
+    st_i8_b = km.analyze_residual(w_benign, wq_i8, c_i8, sc_i8, bits=8, group_size=0, seed=0, max_code=254)
+    assert 0.90 <= st_i8_b["rho1"] <= 1.10
+    assert 0.40 <= st_i8_b["mean_u"] <= 0.60
+    assert st_i8_b["boundary_frac_85"] <= 0.20
+
+    sc_full = np.repeat(sc_i8, 256, axis=1)
+    w_i8_adv = np.where(
+        np.abs(w_benign) == np.max(np.abs(w_benign), axis=1, keepdims=True),
+        w_benign,
+        wq_i8 - 0.35 * sc_full * sign_r1,
+    ).astype(np.float32)
+    wq_ia, c_ia, sc_ia = km.int8_quantize_numpy(w_i8_adv, group_size=0)
+    st_i8_adv = km.analyze_residual(w_i8_adv, wq_ia, c_ia, sc_ia, bits=8, group_size=0, seed=0, max_code=254)
+    assert st_i8_adv["rho1"] > 2.0
+
+    w_i8_out = w_benign.copy()
+    for r in range(40):
+        w_i8_out[r, 0] = 500.0 * float(np.max(np.abs(w_i8_out[r])))
+    wq_io, c_io, sc_io = km.int8_quantize_numpy(w_i8_out, group_size=0)
+    st_i8_out = km.analyze_residual(w_i8_out, wq_io, c_io, sc_io, bits=8, group_size=0, seed=0, max_code=254)
+    assert st_i8_out["collapse_ge90_count"] >= 30
+
+    acc_i8 = np.zeros_like(w_benign, dtype=np.float64)
+    for s in range(200):
+        acc_i8 += km.stochastic_round_int8(w_benign, sc_i8, group_size=0, seed=s)
+    assert abs(float(np.mean(acc_i8 / 200.0 - w_benign))) < 1e-4
+    np.testing.assert_allclose(acc_i8 / 200.0, w_benign, atol=5e-4)
+
+    def write_f16_folder(path, tensors, shards):
+        path.mkdir()
+        for idx_s, names in enumerate(shards):
+            header, blobs, off = {}, [], 0
+            for k in names:
+                a = tensors[k]
+                b = a.tobytes()
+                header[k] = {"dtype": {"float16": "F16", "uint16": "BF16", "float32": "F32"}[str(a.dtype)], "shape": list(a.shape), "data_offsets": [off, off + len(b)]}
+                blobs.append(b)
+                off += len(b)
+            header["__metadata__"] = {"format": "pt"}
+            h = json.dumps(header).encode()
+            h += b" " * (-len(h) % 8)
+            (path / f"model-{idx_s}.safetensors").write_bytes(len(h).to_bytes(8, "little") + h + b"".join(blobs))
+        (path / "config.json").write_text("{}")
+        return path
+
+    lm_head = (rng.standard_normal((8, 64)) * 0.05).astype(np.float32)
+    src = write_f16_folder(
+        tmp_path / "src_i8",
+        {
+            "model.layers.0.mlp.down_proj.weight": w_benign.astype(np.float16),
+            "model.layers.1.mlp.down_proj.weight": w_i8_adv.astype(np.float16),
+            "lm_head.weight": lm_head.astype(np.float16),
+        },
+        shards=[["model.layers.0.mlp.down_proj.weight", "lm_head.weight"], ["model.layers.1.mlp.down_proj.weight"]],
+    )
+    out1, out2 = tmp_path / "i8_1.json", tmp_path / "i8_2.json"
+    km.mirror(str(src), str(out1), mode="int8")
+    km.mirror(str(src), str(out2), mode="int8")
+    assert out1.read_bytes() == out2.read_bytes()
+    rep = json.loads(out1.read_text(encoding="utf-8"))
+    assert rep["quantizer"] == {"mode": "int8", "bits": 8, "group": 0, "runtime": "torch"}
+    assert rep["flagged"] == ["model.layers.1.mlp.down_proj.weight"]
+
+    dst = tmp_path / "disarmed_i8"
+    km.disarm(str(src), str(out1), str(dst), seed=5)
+    d = weights.diff(src, dst)
+    assert "model-0.safetensors" not in d["weights"]["files not equal"]
+    assert d["weights"]["changed rows"] == []
+    out_after = tmp_path / "i8_after.json"
+    km.mirror(str(dst), str(out_after), mode="int8")
+    rep_after = json.loads(out_after.read_text(encoding="utf-8"))
+    assert rep_after["flagged"] == []
+    assert "model.layers.1.mlp.down_proj.weight" in rep_after["on_grid"]
+
+    # Also verify BF16 int8 disarm neutralizes coherent residuals (even though BF16 7-bit mantissa re-jitters 8-bit grid points)
+    src_bf = folder(
+        tmp_path / "src_i8_bf",
+        {"model.layers.0.mlp.down_proj.weight": to_bf16_u16(w_i8_adv), "lm_head.weight": to_bf16_u16(lm_head)},
+    )
+    out_bf1 = tmp_path / "i8_bf1.json"
+    km.mirror(str(src_bf), str(out_bf1), mode="int8")
+    assert json.loads(out_bf1.read_text())["flagged"] == ["model.layers.0.mlp.down_proj.weight"]
+    dst_bf = tmp_path / "disarmed_i8_bf"
+    km.disarm(str(src_bf), str(out_bf1), str(dst_bf), seed=5)
+    out_bf_after = tmp_path / "i8_bf_after.json"
+    km.mirror(str(dst_bf), str(out_bf_after), mode="int8")
+    assert json.loads(out_bf_after.read_text())["flagged"] == []

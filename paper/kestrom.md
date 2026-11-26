@@ -253,7 +253,7 @@ attacks) had all 30/30 modified tensors localized with 0/900 false positives ($\
 trigger-free plain text (coherence 12.3–93.5×), and trigger-blind neutralization via `kestrom inspect disarm` (anchor-preserving
 stochastic rounding, unbiased for values inside the quantizer grid, on only the flagged tensors, cutting 4-bit attack activation from 24/24 to 0/24—and 1/24 on the histogram-matched
 model, matching BF16—while surviving subsequent standard 4-bit quantization). An outlier-injection block-collapse test was missed by
-$\rho_1$ and cell-boundary clustering and caught by block collapse (`ge90` 64–65 vs benign max 12).
+$\rho_1$ and cell-boundary clustering and caught by block collapse (`ge90` 64–65 vs benign max 12). Extending `mirror` and `disarm` to PyTorch and `bitsandbytes` 4-bit NormalFloat (NF4, group 64) on Linux + NVIDIA L4 CUDA (`bitsandbytes` 0.50.2) matched CUDA `bitsandbytes` FP32 NF4 dequantization exactly (`max_abs_diff = 0.0`), gave zero flags and byte-exact reports on benign Qwen3.5-0.8B (186 tensors, max $\rho_1$ 1.0185, max `b85` 0.1583, behavior coherence 0.81×) and Qwen3.5-4B (248 tensors, max $\rho_1$ 1.0213, max `b85` 0.1509, behavior coherence 0.88×), and on a 2-tensor NF4 box-PGD backdoor localized all 2/2 modified tensors with 0/184 false positives (behavior coherence 3.84×) while `disarm` reduced the real `bitsandbytes` 4-bit NF4 target-token logit jump from +9.60 to +0.87 with zero changed `kestrom-verify diff` output rows.
 
 ### 5.7 Writing relations behind a key
 
@@ -312,8 +312,8 @@ scanner, 2026); `kestrom inspect` reads a fine-tune against its declared recipe,
   holds where it was measured, not at every possible input.
 - G2 for decode-time edits trusts the events the decoding records, and `compare` trusts that its input files are the outputs they
   claim to be (see §2).
-- Tested primarily on Apple Silicon, with Qwen3.5 (0.8B, 9B) and Qwen3-8B; `kestrom ifc` and `kestrom-verify generate torch` / `compare events` were also tested on Linux + NVIDIA L4 CUDA (`Qwen3.5-4B`, `torch` 2.14.1+cu130). Not tested on Linux/CUDA: weight edits, `inspect`, `logits`/`measure`, models whose output layer is tied to
-  the embedding in GGUF, quantization types other than Q4_K_M. In a tied model (Qwen3.5-0.8B) a changed row is also an input
+- Tested primarily on Apple Silicon, with Qwen3.5 (0.8B, 9B) and Qwen3-8B; `kestrom ifc`, `kestrom inspect mirror` / `disarm` (`bitsandbytes` NF4 4-bit), `kestrom-verify generate torch` / `compare events`, and `kestrom-verify diff` were also tested on Linux + NVIDIA L4 CUDA (`Qwen3.5-0.8B` / `4B`, `torch` 2.14.1+cu130, `bitsandbytes` 0.50.2). Not tested on Linux/CUDA: weight edits, other `inspect` subcommands, `logits`/`measure`, models whose output layer is tied to
+  the embedding in GGUF, quantization types other than Q4_K_M / NF4. In a tied model (Qwen3.5-0.8B) a changed row is also an input
   embedding, so G1 and G2 hold only for inputs without a changed id; the reports check those and count the others.
 - The experiments are single runs of 100 to 300 prompts; §5.7 writes 32 relations per run, on two sets of people.
 - Most tier-2 edits and the `find` commands are checked for what they change, not for their effect; several tools missed the targets
