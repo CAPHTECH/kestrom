@@ -50,10 +50,11 @@ safetensors (a GGUF file through `gguf`); MLX where a model is run or a tensor i
       base.gguf.types (the type of each tensor given to llama-quantize) and base.gguf.log (its output). Then run shape, lens, behavior and
       trigger with DST/base against DST/model. The original through BF16 GGUF and back gives every tensor's bytes but A_log and the
       norms (within 6e-8), in both layouts. Tested with Q4_K_M only
-  kestrom inspect mirror MODEL OUT.json [PROMPTS.json|none] [BITS] [GROUP] [MODE] [RUNTIME]
+  kestrom inspect mirror MODEL OUT.json [PROMPTS.json|none] [BITS|none] [GROUP|none] [MODE] [RUNTIME]
       look for a quantization-conditioned backdoor in a single FP16/BF16 checkpoint with no original model and no trigger prompts
-      (default: MLX affine 4-bit, group 64; MODE affine with BITS 2, 4 or 8, or MODE nf4 with BITS 4; RUNTIME mlx or torch, defaulting
-      to mlx for affine and torch for nf4; `none` for PROMPTS.json to give BITS without it). For each 2-D language-model tensor, computes E = Q(W) − W and checks three self-controlled
+      (default: MLX affine 4-bit, group 64; MODE affine with BITS 2, 4 or 8; MODE nf4 or fp4 with BITS 4; MODE int8 with BITS 8 and
+      GROUP 0 for row-wise; RUNTIME mlx or torch, defaulting to mlx for affine and torch for nf4/fp4/int8; `none` skips an optional arg).
+      For each 2-D language-model tensor, computes E = Q(W) − W and checks three self-controlled
       signals: spectral sign-coherence rho1 = sigma1(E) / mean_k sigma1(E * sigma_k) against Rademacher sign flips (flagged > 1.10),
       interior quantization cell-boundary clustering boundary_frac_85 (flagged > 0.20; tensors already on the grid with mean_u < 0.05
       are listed under `on_grid` and skipped for residual-based flags), and active block bin-collapse
@@ -62,8 +63,8 @@ safetensors (a GGUF file through `gguf`); MLX where a model is run or a tensor i
       mirror antisymmetry at the top lifted token (behavior flagged when coherence_ratio_broad or coherence_ratio_conc > 2). Writes a deterministic JSON report (same inputs -> same bytes)
   kestrom inspect disarm MODEL MIRROR.json DST [SEED] [RUNTIME]
       trigger-blind neutralization for tensors flagged in MIRROR.json: copies MODEL to DST and replaces only the flagged tensors with
-      anchor-preserving stochastic rounding on the quantizer grid (affine or NF4; E[Q_SR(W)] = W for values inside the grid; MLX moves the scale so that
-      zero is on the grid, and values past the grid's last point round to it), leaving every unflagged tensor byte-identical
+      anchor-preserving stochastic rounding on the quantizer grid (affine, NF4, FP4 or INT8; E[Q_SR(W)] = W for values inside the grid;
+      MLX moves the scale so that zero is on the grid, and values past the grid's last point round to it), leaving every unflagged tensor byte-identical
       (checkable with `kestrom-verify diff`). Preserving group anchors keeps the disarmed codes under subsequent standard quantization.
       Stops when a flagged tensor is not in MODEL
 """

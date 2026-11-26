@@ -1,6 +1,6 @@
 """Anti-quantization mirror forensics and trigger-blind disarming (tier 3, MLX and PyTorch).
 
-Reads a single FP16/BF16 checkpoint W and a target quantizer Q (MLX affine or bitsandbytes-compatible NF4)
+Reads a single FP16/BF16 checkpoint W and a target quantizer Q (MLX affine or bitsandbytes-compatible NF4/FP4/INT8)
 with no clean original model and no trigger prompts. Computes E = Q(W) - W and compares W, Q(W) = W + E,
 the anti-quantization mirror W_mirror = 2W - Q(W) = W - E, and Rademacher sign-randomized nulls W_sigma = W + (E * sigma).
 """
@@ -44,6 +44,16 @@ NF4_LEVELS = np.array(
     dtype=np.float32,
 )
 _NF4_MIDPOINTS = (0.5 * (NF4_LEVELS[:-1] + NF4_LEVELS[1:])).astype(np.float32)
+
+# bitsandbytes 4-bit FP4 (E2M1) codebook normalized by 12.0 (merged -0.0 and +0.0 -> 15 sorted levels).
+FP4_LEVELS = (
+    np.array(
+        [-12.0, -8.0, -6.0, -4.0, -3.0, -2.0, -0.0625, 0.0, 0.0625, 2.0, 3.0, 4.0, 6.0, 8.0, 12.0],
+        dtype=np.float32,
+    )
+    / np.float32(12.0)
+)
+_FP4_MIDPOINTS = (0.5 * (FP4_LEVELS[:-1] + FP4_LEVELS[1:])).astype(np.float32)
 
 
 def top_singular_values(mat: np.ndarray, top_k: int = 8, n_iter: int = 20, seed: int = 0) -> np.ndarray:
@@ -95,17 +105,48 @@ def affine_quantize_numpy(w_f32: np.ndarray, bits: int = 4, group_size: int = 64
     return w_q.astype(np.float32), codes.reshape(rows, cols), scales.astype(np.float32), biases.astype(np.float32)
 
 
-def nf4_quantize_numpy(w_f32: np.ndarray, group_size: int = DEFAULT_GROUP) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Pure-NumPy group-wise 4-bit NormalFloat (NF4) quantizer returning (w_q, codes, absmax)."""
+def _levels_quantize_numpy(
+    w_f32: np.ndarray,
+    levels: np.ndarray,
+    midpoints: np.ndarray,
+    group_size: int = DEFAULT_GROUP,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Pure-NumPy group-wise absmax quantizer over a normalized 1-D codebook, returning (w_q, codes, absmax)."""
     rows, cols = w_f32.shape
     ng = cols // group_size
     wg = w_f32.astype(np.float32).reshape(rows, ng, group_size)
     absmax = np.max(np.abs(wg), axis=2)
     safe = np.where(absmax < 1e-12, 1.0, absmax)
     norm = np.where(absmax[:, :, None] < 1e-12, 0.0, wg / safe[:, :, None])
-    codes = np.searchsorted(_NF4_MIDPOINTS, norm).astype(np.uint8)
-    w_q = (absmax[:, :, None] * NF4_LEVELS[codes]).reshape(rows, cols).astype(np.float32)
+    codes = np.searchsorted(midpoints, norm).astype(np.uint8)
+    w_q = (absmax[:, :, None] * levels[codes]).reshape(rows, cols).astype(np.float32)
     return w_q, codes.reshape(rows, cols), absmax.astype(np.float32)
+
+
+def nf4_quantize_numpy(w_f32: np.ndarray, group_size: int = DEFAULT_GROUP) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Pure-NumPy group-wise 4-bit NormalFloat (NF4) quantizer returning (w_q, codes, absmax)."""
+    return _levels_quantize_numpy(w_f32, NF4_LEVELS, _NF4_MIDPOINTS, group_size=group_size)
+
+
+def fp4_quantize_numpy(w_f32: np.ndarray, group_size: int = DEFAULT_GROUP) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Pure-NumPy group-wise 4-bit bitsandbytes FP4 (E2M1) quantizer returning (w_q, codes, absmax)."""
+    return _levels_quantize_numpy(w_f32, FP4_LEVELS, _FP4_MIDPOINTS, group_size=group_size)
+
+
+def int8_quantize_numpy(w_f32: np.ndarray, group_size: int = 0) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Pure-NumPy symmetric INT8 absmax quantizer (group_size=0 for row-wise Linear8bitLt), returning (w_q, codes_shifted, scales)."""
+    rows, cols = w_f32.shape
+    gs = cols if group_size <= 0 else int(group_size)
+    ng = cols // gs
+    wg = w_f32.astype(np.float32).reshape(rows, ng, gs)
+    absmax = np.max(np.abs(wg), axis=2)
+    scales = absmax / np.float32(127.0)
+    safe = np.where(scales < 1e-12, 1.0, scales)
+    q_signed = np.where(scales[:, :, None] < 1e-12, 0.0, np.clip(np.round(wg / safe[:, :, None]), -127.0, 127.0))
+    w_q = (q_signed * scales[:, :, None]).reshape(rows, cols).astype(np.float32)
+    # Shift signed [-127, 127] into [0, 254] uint8 so boundary checks exclude anchors cleanly.
+    codes = (q_signed + 127.0).astype(np.uint8).reshape(rows, cols)
+    return w_q, codes, scales.astype(np.float32)
 
 
 def analyze_residual(
@@ -118,6 +159,7 @@ def analyze_residual(
     n_null: int = N_NULL_WEIGHT,
     seed: int = 0,
     levels: Optional[np.ndarray] = None,
+    max_code: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Self-controlled weight-space mirror metrics for one 2-D tensor."""
     e = (w_q - w_f32).astype(np.float32)
@@ -137,16 +179,17 @@ def analyze_residual(
 
     # Quantization cell-boundary clustering (use |scales| since MLX affine scales can be negative)
     rows, cols = w_f32.shape
-    ng = cols // group_size
-    e_grp = e.reshape(rows, ng, group_size)
-    c_grp = codes.reshape(rows, ng, group_size)
+    gs = cols if group_size <= 0 else int(group_size)
+    ng = cols // gs
+    e_grp = e.reshape(rows, ng, gs)
+    c_grp = codes.reshape(rows, ng, gs)
     abs_scale = np.abs(scales[:, :, None]).astype(np.float32)
     if levels is None:
-        max_code = (1 << bits) - 1
+        mc = (1 << bits) - 1 if max_code is None else int(max_code)
         half_step = np.maximum(abs_scale * 0.5, 1e-12)
     else:
         lv = np.asarray(levels, dtype=np.float32)
-        max_code = len(lv) - 1
+        mc = len(lv) - 1
         h_left = np.empty_like(lv)
         h_left[1:] = 0.5 * (lv[1:] - lv[:-1])
         h_left[0] = h_left[1]
@@ -155,7 +198,7 @@ def analyze_residual(
         h_right[-1] = h_right[-2]
         # Asymmetric Voronoi cell: e = w_q - w_f32 >= 0 means w_f32 lies to the left of lv[code].
         half_step = np.maximum(abs_scale * np.where(e_grp >= 0, h_left[c_grp], h_right[c_grp]), 1e-12)
-    interior = (c_grp > 0) & (c_grp < max_code) & (abs_scale > 1e-9)
+    interior = (c_grp > 0) & (c_grp < mc) & (abs_scale > 1e-9)
     if np.any(interior):
         u_all = np.abs(e_grp) / half_step
         u_int = np.clip(u_all[interior], 0.0, 2.0)
@@ -164,20 +207,26 @@ def analyze_residual(
         boundary_frac_90 = float(np.mean(u_int > 0.90))
         int_cnt = np.sum(interior, axis=2)
         b85_cnt = np.sum((u_all > 0.85) & interior, axis=2)
-        valid_blk = int_cnt >= (group_size // 2)
+        valid_blk = int_cnt >= (gs // 2)
         blk_b85_p99 = float(np.percentile(b85_cnt[valid_blk] / int_cnt[valid_blk], 99.0)) if np.any(valid_blk) else 0.0
     else:
         mean_u = boundary_frac_85 = boundary_frac_90 = blk_b85_p99 = 0.0
 
     # Block bin-collapse & outlier ratio (exclude dead all-zero blocks)
-    w_grp = np.abs(w_f32.reshape(rows, ng, group_size))
+    w_grp = np.abs(w_f32.reshape(rows, ng, gs))
     blk_max = np.max(w_grp, axis=2)
     blk_med = np.median(w_grp, axis=2)
     active = blk_max > 1e-7
     outlier = np.where(active, blk_max / (blk_med + 1e-8), 0.0)
-    c_flat = c_grp.reshape(-1, group_size)
-    bin_counts = np.stack([np.sum(c_flat == b, axis=1) for b in range(max_code + 1)], axis=1)
-    max_bin_frac = np.where(active.reshape(-1), np.max(bin_counts, axis=1) / float(group_size), 0.0)
+    c_flat = c_grp.reshape(-1, gs)
+    n_bins = mc + 1
+    max_counts = np.empty(c_flat.shape[0], dtype=np.int32)
+    for start in range(0, c_flat.shape[0], 4096):
+        blk = c_flat[start : start + 4096].astype(np.int64)
+        off = np.arange(blk.shape[0], dtype=np.int64)[:, None] * n_bins + blk
+        counts = np.bincount(off.ravel(), minlength=blk.shape[0] * n_bins).reshape(blk.shape[0], n_bins)
+        max_counts[start : start + 4096] = counts.max(axis=1)
+    max_bin_frac = np.where(active.reshape(-1), max_counts / float(gs), 0.0)
 
     return {
         "shape": [int(rows), int(cols)],
@@ -313,23 +362,24 @@ def stochastic_round_grid(
     return out.reshape(rows, cols).astype(np.float32)
 
 
-def stochastic_round_nf4(
+def _stochastic_round_levels(
     w_f32: np.ndarray,
     absmax: np.ndarray,
+    levels: np.ndarray,
     group_size: int = DEFAULT_GROUP,
     seed: int = 0,
 ) -> np.ndarray:
-    """Anchor-preserving unbiased stochastic rounding on the NF4 quantizer grid (E[Q_SR(W)] = W)."""
+    """Anchor-preserving unbiased stochastic rounding on a normalized 1-D codebook (E[Q_SR(W)] = W)."""
     rows, cols = w_f32.shape
     ng = cols // group_size
     wg = w_f32.astype(np.float32).reshape(rows, ng, group_size)
     am = absmax.astype(np.float32)[:, :, None]
     safe = np.where(am < 1e-12, 1.0, am)
     norm = np.clip(np.where(am < 1e-12, 0.0, wg / safe), -1.0, 1.0)
-    hi_idx = np.clip(np.searchsorted(NF4_LEVELS, norm, side="right"), 1, len(NF4_LEVELS) - 1)
+    hi_idx = np.clip(np.searchsorted(levels, norm, side="right"), 1, len(levels) - 1)
     lo_idx = hi_idx - 1
-    lv_lo = NF4_LEVELS[lo_idx]
-    lv_hi = NF4_LEVELS[hi_idx]
+    lv_lo = levels[lo_idx]
+    lv_hi = levels[hi_idx]
     span = np.maximum(lv_hi - lv_lo, 1e-12)
     p_hi = (norm - lv_lo) / span
     rng = np.random.default_rng(seed)
@@ -337,6 +387,49 @@ def stochastic_round_nf4(
     lv_sr = np.where(pick_hi, lv_hi, lv_lo)
     is_anchor = np.abs(wg) == am
     out = np.where(is_anchor, wg, am * lv_sr)
+    return out.reshape(rows, cols).astype(np.float32)
+
+
+def stochastic_round_nf4(
+    w_f32: np.ndarray,
+    absmax: np.ndarray,
+    group_size: int = DEFAULT_GROUP,
+    seed: int = 0,
+) -> np.ndarray:
+    """Anchor-preserving unbiased stochastic rounding on the NF4 quantizer grid (E[Q_SR(W)] = W)."""
+    return _stochastic_round_levels(w_f32, absmax, NF4_LEVELS, group_size=group_size, seed=seed)
+
+
+def stochastic_round_fp4(
+    w_f32: np.ndarray,
+    absmax: np.ndarray,
+    group_size: int = DEFAULT_GROUP,
+    seed: int = 0,
+) -> np.ndarray:
+    """Anchor-preserving unbiased stochastic rounding on the FP4 quantizer grid (E[Q_SR(W)] = W)."""
+    return _stochastic_round_levels(w_f32, absmax, FP4_LEVELS, group_size=group_size, seed=seed)
+
+
+def stochastic_round_int8(
+    w_f32: np.ndarray,
+    scales: np.ndarray,
+    group_size: int = 0,
+    seed: int = 0,
+) -> np.ndarray:
+    """Anchor-preserving unbiased stochastic rounding on the symmetric INT8 absmax grid (E[Q_SR(W)] = W)."""
+    rows, cols = w_f32.shape
+    gs = cols if group_size <= 0 else int(group_size)
+    ng = cols // gs
+    wg = w_f32.astype(np.float32).reshape(rows, ng, gs)
+    sc = scales.astype(np.float32)[:, :, None]
+    safe = np.where(np.abs(sc) < 1e-12, 1.0, sc)
+    u = np.clip(np.where(np.abs(sc) < 1e-12, 0.0, wg / safe), -127.0, 127.0)
+    lo = np.floor(u)
+    rng = np.random.default_rng(seed)
+    q = np.clip(lo + (rng.random(u.shape, dtype=np.float32) < (u - lo)).astype(np.float32), -127.0, 127.0)
+    absmax = np.max(np.abs(wg), axis=2, keepdims=True)
+    is_anchor = np.abs(wg) == absmax
+    out = np.where(is_anchor, wg, q * sc)
     return out.reshape(rows, cols).astype(np.float32)
 
 
@@ -388,7 +481,43 @@ def _mlx_quantize_tensor(w_mx: Any, bits: int, group_size: int, mode: str):
 def _is_target_weight(name: str, shape: Sequence[int], group_size: int) -> bool:
     if len(shape) != 2 or "visual" in name or "mtp." in name or "embed_tokens" in name or "lm_head" in name:
         return False
-    return int(shape[-1]) % group_size == 0
+    return int(shape[-1]) > 0 if group_size <= 0 else int(shape[-1]) % group_size == 0
+
+
+def _resolve_quantizer_args(bits: Any, group: Any, mode: Any, runtime: Any) -> Tuple[str, int, int, str]:
+    """Validate and resolve mirror/disarm quantizer defaults across affine, nf4, fp4, and int8."""
+    m = str(mode)
+    if m not in ("affine", "nf4", "fp4", "int8"):
+        raise SystemExit(f"mirror supports affine, nf4, fp4 or int8 mode, not {m!r}")
+    b = (8 if m == "int8" else DEFAULT_BITS) if bits in (None, "", "none") else int(bits)
+    g = (0 if m == "int8" else DEFAULT_GROUP) if group in (None, "", "none") else int(group)
+    rt = ("mlx" if m == "affine" else "torch") if runtime in (None, "", "none") else str(runtime)
+    if m == "affine" and b not in (2, 4, 8):
+        raise SystemExit(f"affine mode supports 2, 4 or 8 bits only, not {b}")
+    if m in ("nf4", "fp4") and b != 4:
+        raise SystemExit(f"{m} mode supports 4 bits only, not {b}")
+    if m == "int8" and b != 8:
+        raise SystemExit(f"int8 mode supports 8 bits only, not {b}")
+    if (m != "int8" and g <= 0) or (m == "int8" and g < 0):
+        raise SystemExit(f"invalid group size {g} for {m!r}")
+    if rt not in ("mlx", "torch"):
+        raise SystemExit(f"mirror supports mlx or torch runtime, not {rt!r}")
+    return m, b, g, rt
+
+
+def _quantize_numpy_by_mode(wf: np.ndarray, mode: str, bits: int, group: int):
+    """Dispatch pure-NumPy quantization returning (w_q, codes, scales, levels, max_code)."""
+    if mode == "nf4":
+        wq, codes, am = nf4_quantize_numpy(wf, group_size=group)
+        return wq, codes, am, NF4_LEVELS, None
+    if mode == "fp4":
+        wq, codes, am = fp4_quantize_numpy(wf, group_size=group)
+        return wq, codes, am, FP4_LEVELS, None
+    if mode == "int8":
+        wq, codes, sc = int8_quantize_numpy(wf, group_size=group)
+        return wq, codes, sc, None, 254
+    wq, codes, sc, _ = affine_quantize_numpy(wf, bits=bits, group_size=group)
+    return wq, codes, sc, None, None
 
 
 def _finalize_behavior_mirror(
@@ -519,10 +648,7 @@ def _behavior_mirror_torch(
     err: Dict[str, np.ndarray] = {}
     for k, w_cpu in orig_cpu.items():
         wf = w_cpu.float().numpy()
-        if mode == "nf4":
-            wq, _, _ = nf4_quantize_numpy(wf, group_size=group_size)
-        else:
-            wq, _, _, _ = affine_quantize_numpy(wf, bits=bits, group_size=group_size)
+        wq, _, _, _, _ = _quantize_numpy_by_mode(wf, mode, bits, group_size)
         err[k] = (wq - wf).astype(np.float32)
 
     def apply(sign: float = 0.0, rng: Optional[np.random.Generator] = None) -> None:
@@ -567,8 +693,8 @@ def mirror(
     model_dir,
     out,
     prompts=None,
-    bits=DEFAULT_BITS,
-    group=DEFAULT_GROUP,
+    bits=None,
+    group=None,
     mode=DEFAULT_MODE,
     runtime=None,
 ):
@@ -577,16 +703,7 @@ def mirror(
 
     from .inspect import write
 
-    bits, group, mode = int(bits), int(group), str(mode)
-    if mode not in ("affine", "nf4"):
-        raise SystemExit(f"mirror supports affine or nf4 mode, not {mode!r}")
-    if mode == "affine" and bits not in (2, 4, 8):
-        raise SystemExit(f"affine mode supports 2, 4 or 8 bits only, not {bits}")
-    if mode == "nf4" and bits != 4:
-        raise SystemExit(f"nf4 mode supports 4 bits only, not {bits}")
-    rt = ("torch" if mode == "nf4" else "mlx") if runtime in (None, "", "none") else str(runtime)
-    if rt not in ("mlx", "torch"):
-        raise SystemExit(f"mirror supports mlx or torch runtime, not {rt!r}")
+    mode, bits, group, rt = _resolve_quantizer_args(bits, group, mode, runtime)
     P = None if prompts in (None, "", "none") else [p["ids"] for p in report.read(prompts)]
 
     folder = Path(model_dir)
@@ -614,14 +731,18 @@ def mirror(
                 if not _is_target_weight(name, meta["shape"], group):
                     continue
                 wf = _read_safetensors_tensor_numpy(f, hn, meta)
-                if mode == "nf4":
-                    wq, codes, scales = nf4_quantize_numpy(wf, group_size=group)
-                    tensors_out[name] = analyze_residual(
-                        wf, wq, codes, scales, bits=bits, group_size=group, seed=idx * 17, levels=NF4_LEVELS
-                    )
-                else:
-                    wq, codes, scales, _ = affine_quantize_numpy(wf, bits=bits, group_size=group)
-                    tensors_out[name] = analyze_residual(wf, wq, codes, scales, bits=bits, group_size=group, seed=idx * 17)
+                wq, codes, scales, levels, max_code = _quantize_numpy_by_mode(wf, mode, bits, group)
+                tensors_out[name] = analyze_residual(
+                    wf,
+                    wq,
+                    codes,
+                    scales,
+                    bits=bits,
+                    group_size=group,
+                    seed=idx * 17,
+                    levels=levels,
+                    max_code=max_code,
+                )
                 idx += 1
 
     judged = judge_mirror_tensors(tensors_out)
@@ -667,12 +788,8 @@ def disarm(model_dir, mirror_file, dst, seed=0, runtime=None):
     M = json.loads(Path(mirror_file).read_text(encoding="utf-8"))
     flagged = set(M.get("flagged", []))
     q = M["quantizer"]
-    bits, group, mode = int(q["bits"]), int(q["group"]), str(q["mode"])
-    if mode not in ("affine", "nf4"):
-        raise SystemExit(f"disarm supports affine or nf4 mode, not {mode!r}")
-    rt = str(q.get("runtime", "torch" if mode == "nf4" else "mlx")) if runtime in (None, "", "none") else str(runtime)
-    if rt not in ("mlx", "torch"):
-        raise SystemExit(f"disarm supports mlx or torch runtime, not {rt!r}")
+    rt_in = q.get("runtime") if runtime in (None, "", "none") else runtime
+    mode, bits, group, rt = _resolve_quantizer_args(q["bits"], q["group"], q["mode"], rt_in)
     seed = int(seed)
 
     src, dst_p = Path(model_dir), Path(dst)
@@ -723,6 +840,12 @@ def disarm(model_dir, mirror_file, dst, seed=0, runtime=None):
                 if mode == "nf4":
                     _, _, absmax = nf4_quantize_numpy(wf, group_size=group)
                     wq_sr = stochastic_round_nf4(wf, absmax, group_size=group, seed=seed_map[name])
+                elif mode == "fp4":
+                    _, _, absmax = fp4_quantize_numpy(wf, group_size=group)
+                    wq_sr = stochastic_round_fp4(wf, absmax, group_size=group, seed=seed_map[name])
+                elif mode == "int8":
+                    _, _, scales = int8_quantize_numpy(wf, group_size=group)
+                    wq_sr = stochastic_round_int8(wf, scales, group_size=group, seed=seed_map[name])
                 else:
                     _, _, scales, biases = affine_quantize_numpy(wf, bits=bits, group_size=group)
                     wq_sr = stochastic_round_grid(wf, scales, biases, bits=bits, group_size=group, seed=seed_map[name])
