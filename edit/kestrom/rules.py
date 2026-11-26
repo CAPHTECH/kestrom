@@ -101,8 +101,9 @@ a name in an h1 line: declared by an `in` line, or else read by a probe (by run,
                                              compiled prefix KV cache (composing >=2 matched entries on demand with an in-memory LRU
                                              cache), feeds only the prompt tokens after the shared prefix (zero knowledge text in the
                                              prompt), and records event 0; otherwise no cache is injected and the kv line records no
-                                             event. Any `in ... prompt` conditions in the same rules are evaluated on the full prompt
-                                             without the fact cache before decoding. OUT records "kv" as the matched entry key (list when >=2) or null. One kv line at most
+                                             event. Any `in NAME: prompt FILE LAYER` conditions in the same rules are evaluated on the full prompt
+                                             without the fact cache before decoding and passed as 0/1 `values` to the KV bank's rules (`"data"`
+                                             may be omitted when the bank reads only those prompt inputs). OUT records "kv" as the matched entry key (list when >=2) or null. One kv line at most
 """
 import ast
 import json
@@ -508,7 +509,7 @@ def attach(model):
             kestrom_rules = True
 
             def __call__(self, inputs, *args, **kwargs):
-                if SIDE.get("on") and SIDE["declared"]:
+                if SIDE.get("on") and SIDE["declared"] and SIDE["net"] is not None:
                     SIDE["F"] = flags(inputs[0].tolist())
                 stash["h"] = tb.__call__(self, inputs, *args, **kwargs)
                 return stash["h"]
@@ -560,15 +561,32 @@ def opening(x):
     return None if c is None else (c + "\n", starts, text.replace("{}", c) + "\n" if text else None)
 
 
+def _with_prompt_values(data, prompt_on):
+    """Merge prompt condition readings {name: bool} as 0/1 `values` into `data` without mutating it."""
+    prompt_vals = {name: int(bool(on)) for name, on in prompt_on.items()}
+    if not prompt_vals:
+        return data
+    if isinstance(data, dict) and isinstance(data.get("steps"), list) and data["steps"]:
+        steps = [dict(s) for s in data["steps"]]
+        steps[-1]["values"] = {**prompt_vals, **steps[-1].get("values", {})}
+        return {**data, "steps": steps}
+    return {**data, "values": {**prompt_vals, **data.get("values", {})}}
+
+
 def kv_for(x, ids):
     """What a `kv` line injects for prompt x: (kv value, matched entries, strip_prefix), or None without a `kv` line or match."""
     if not SIDE.get("kv"):
         return None
-    if "data" not in x:
-        raise SystemExit(f"prompt {x.get('id')}: a kv line reads the prompt's \"data\"")
+    prompt_on = SIDE.get("prompt_on") or {}
     from . import kv
     bank, max_match = SIDE["kv"]
-    hits = kv.match_entries(bank, x["data"], max_match)
+    if "data" in x:
+        data = _with_prompt_values(x["data"], prompt_on)
+    elif prompt_on and not any(s[0] in ("match", "count", "number") for s in bank["rules"]["declared"].values()):
+        data = {"values": {k: int(bool(v)) for k, v in prompt_on.items()}}
+    else:
+        raise SystemExit(f"prompt {x.get('id')}: a kv line reads the prompt's \"data\"")
+    hits = kv.match_entries(bank, data, max_match)
     if not hits:
         return None
     sp = bank["strip_prefix"]
@@ -628,7 +646,7 @@ def load(path, tok):
                 tokens=mx.array(token_ids(tok, R["tokens"])) if R["tokens"] else None, k=k,
                 moves=[mx.array(token_ids(tok, col)) for col in ([x for x, _, _ in moves], [y for _, y, _ in moves])] + [mx.array([u for _, _, u in moves])] if moves else None,
                 bans=[(mx.array(token_ids(tok, ts)), u) for ts, u in R["bans"]], adds=vectors, think=think, tok=tok,
-                conditions={file: np.load(file) for spec in R["declared"].values() if spec[0] == "prompt" for file in [spec[1]]})
+                conditions={file: dict(np.load(file)) for spec in R["declared"].values() if spec[0] == "prompt" for file in [spec[1]]})
 
 
 def start(model, ids):
