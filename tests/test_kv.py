@@ -816,3 +816,21 @@ def test_kv_prompt_probe_routing_and_hybrid_precedence(tmp_path):
     # An explicit `values` replaces those of `data`, with the probe readings under it
     sess.turn("Python set?", values={"b": 0}, data={"text": "Python set?", "values": {"a": 1}})
     assert sess.steps[-1]["values"] == {"p_sci": 0, "b": 0}
+
+
+def test_model_fingerprint_rejects_same_size_weight_tampering(tmp_path):
+    model_dir = tmp_path / "model"
+    model_dir.mkdir()
+    (model_dir / "config.json").write_text('{"model_type": "test"}', encoding="utf-8")
+    shard = model_dir / "model.safetensors"
+    shard.write_bytes(b"weights-original")
+
+    fp = kv.model_fingerprint(model_dir)
+    assert len(fp["shards"]) == 1 and len(fp["shards"][0]) == 3
+    bank = {"dir": str(tmp_path / "bank"), "fingerprint": fp}
+    kv.check_model(bank, model_dir)
+
+    # Modify 1 byte while keeping identical byte length; fingerprint must reject it.
+    shard.write_bytes(b"weights-originaX")
+    with pytest.raises(SystemExit):
+        kv.check_model(bank, model_dir)

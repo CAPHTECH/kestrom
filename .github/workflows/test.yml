@@ -8,5 +8,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install numpy pytest
+      - run: pip install numpy pytest setuptools
       - run: python -m pytest -q   # the model tests skip without KESTROM_MODEL (MLX needs Apple Silicon)
+      - run: |
+          pip install --no-build-isolation --no-deps ./verify ./edit
+          python -c "import kestrom.__main__, kestrom_verify.__main__"
+          kestrom-verify --help >/dev/null 2>&1 || test $? -eq 1
+          kestrom --help >/dev/null 2>&1 || test $? -eq 1
