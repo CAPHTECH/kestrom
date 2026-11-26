@@ -6,13 +6,15 @@ listed phrase, stop a loop in the thinking, or open the answer with the class th
 events; the events are the positions where an action acted).
   kestrom generate MODEL PROMPTS.json OUT.jsonl --rules RULES.dsl|FIT.npz [--max-tokens N]
       greedy decoding with the rules (python -m pydoc kestrom.generate); rules that read probed features need a fit
-  kestrom rules fit MODEL RULES.dsl DATA.json OUT.npz [BALANCE] [K] [STEPS] [LR]
+  kestrom rules fit MODEL RULES.dsl DATA.json OUT.npz [BALANCE] [K] [STEPS] [LR] [LAYER]
       DATA: a JSON list of {"ids": prompt ids, "tokens": answer ids, "features": {name: [j, ...]}}: the answer positions j where each
       probed input holds (the position that predicts tokens[j]). Every probed input gets a ridge probe on the input of the output layer
-      at every answer position (each probe's positions weigh BALANCE times the rest in total, 1 unless given). K (4 unless given)
-      scales what the out lines add to the logits and the margin of the moves. With STEPS (0 unless given; not with `in` lines), the
-      probes are then tuned by gradient (Adam, full batch, the step LR times the spread of the probes, 0.001 unless given) on the
-      cross entropy of the answer tokens through the out and move lines (the units continuous, no gate); the rules stay as written.
+      (or decoder LAYER's output when LAYER >= 0, e.g. a layer paired by kestrom bridge fit so kestrom bridge rules can transfer OUT.npz;
+      -1 unless given) at every answer position (each probe's positions weigh BALANCE times the rest in total, 1 unless given). K (4 unless
+      given) scales what the out lines add to the logits and the margin of the moves. With STEPS (0 unless given; not with `in` lines),
+      the probes are then tuned by gradient (Adam, full batch, the step LR times the spread of the probes, 0.001 unless given) on the
+      cross entropy of the answer tokens through the out and move lines (the units continuous, no gate); the rules stay as written. OUT.npz
+      also records `layer` and may hold an optional `bias` vector added to `h @ P` (written by kestrom bridge rules).
   kestrom rules write-mlp MODEL RULES.dsl DATA.json DST [BALANCE] [K]
       rules of h1, h2 and out lines only (one layer of units) written into the last MLP instead (tier 2; python -m pydoc kestrom.mlp).
   kestrom rules run RULES.dsl DATA.json OUT.jsonl
@@ -491,18 +493,29 @@ def inputs_at(h, n):
     """The inputs of the units at the n positions of the current call: the probe readings of h (zeros when h is None: an add line,
     whose units read no probe), then the in lines."""
     import mlx.core as mx
-    parts = [mx.zeros((1, n, SIDE["P"].shape[1]), mx.float32) if h is None else h.astype(mx.float32) @ SIDE["P"]] if SIDE["P"] is not None else []
+    if SIDE["P"] is not None:
+        if h is None:
+            p = mx.zeros((1, n, SIDE["P"].shape[1]), mx.float32)
+        else:
+            p = h.astype(mx.float32) @ SIDE["P"]
+            if SIDE.get("P_bias") is not None:
+                p = p + SIDE["P_bias"]
+        parts = [p]
+    else:
+        parts = []
     return mx.concatenate(parts + [SIDE["F"]], -1) if SIDE["declared"] else parts[0]
 
 
 def attach(model):
     """Make the model run the rules of SIDE while SIDE["on"]: the trunk reads the inputs of the in lines from the token ids it is
     given, the layers of add lines add their directions, and the language model edits the logits (out, move, ban lines), reading the
-    hidden state its decoder returns (the input of the output layer, tied to the embedding or not)."""
+    hidden state its decoder returns (or SIDE["probe_layer"]'s output when >= 0)."""
     import mlx.core as mx
     from .steer import install
     lm, t = (model.language_model if hasattr(model, "language_model") else model), trunk(model)
-    stash = {}
+    probe_layer = SIDE.get("probe_layer", -1)
+    if probe_layer != -1 and not (0 <= probe_layer < len(model.layers)):
+        raise SystemExit(f"probe layer {probe_layer} out of bounds for model with {len(model.layers)} layers")
     if not getattr(type(t), "kestrom_rules", False):
         tb, lb = type(t), type(lm)
 
@@ -512,15 +525,17 @@ def attach(model):
             def __call__(self, inputs, *args, **kwargs):
                 if SIDE.get("on") and SIDE["declared"] and SIDE["net"] is not None:
                     SIDE["F"] = flags(inputs[0].tolist())
-                stash["h"] = tb.__call__(self, inputs, *args, **kwargs)
-                return stash["h"]
+                out = tb.__call__(self, inputs, *args, **kwargs)
+                if SIDE.get("probe_layer", -1) < 0:
+                    SIDE["h"] = out
+                return out
 
         class LM(lb):
             def __call__(self, *args, **kwargs):
                 z = lb.__call__(self, *args, **kwargs)
                 if not SIDE.get("on") or not SIDE["used"]:
                     return z
-                a, fired, u = side(SIDE["net"], inputs_at(stash["h"], z.shape[1]), SIDE["k"], SIDE["used"], mx)
+                a, fired, u = side(SIDE["net"], inputs_at(SIDE.get("h"), z.shape[1]), SIDE["k"], SIDE["used"], mx)
                 SIDE["record"].append((z.shape[1], fired[0, -1]))
                 edited = z.astype(mx.float32)
                 if SIDE["tokens"] is not None:
@@ -531,8 +546,16 @@ def attach(model):
                     edited[..., ids] = mx.where(u[..., i:i + 1] > 0, -mx.inf, edited[..., ids])
                 return mx.where(fired[..., None], edited.astype(z.dtype), z)
         t.__class__, lm.__class__ = Trunk, LM
-    for layer, lines_ in SIDE["adds"].items():
-        install(model.layers[layer], lambda h, lines_=lines_: add(h, lines_))
+    layers_to_hook = set(SIDE["adds"]) | ({probe_layer} if probe_layer >= 0 else set())
+    for layer in sorted(layers_to_hook):
+        lines_ = SIDE["adds"].get(layer)
+        capture_h = (layer == probe_layer)
+
+        def _hook(h, layer=layer, lines_=lines_, capture_h=capture_h):
+            if capture_h and SIDE.get("on") and SIDE.get("probe_layer", -1) == layer:
+                SIDE["h"] = h
+            return add(h, lines_) if lines_ else h
+        install(model.layers[layer], _hook)
 
 
 def add(h, lines_):
@@ -618,12 +641,16 @@ def prompt_conditions(R):
 
 
 def load(path, tok):
-    """SIDE for RULES.dsl (rules with no probed input) or FIT.npz (kestrom rules fit: the rules, the probes, K)."""
+    """SIDE for RULES.dsl (rules with no probed input) or FIT.npz (kestrom rules fit: the rules, the probes, K, optional layer/bias)."""
     if str(path).endswith(".npz"):
         f = np.load(path)
         text, P, k = str(f["rules"]), f["P"], float(f["k"])
+        probe_layer = int(f["layer"]) if "layer" in f else -1
+        P_bias = f["bias"].astype(np.float32) if "bias" in f else None
     else:
-        text, P, k = open(path, encoding="utf-8").read(), None, K
+        text, P, k, probe_layer, P_bias = open(path, encoding="utf-8").read(), None, K, -1, None
+    if P_bias is not None and (P is None or P_bias.shape != (P.shape[1],)):
+        raise SystemExit(f"bias in {path} has shape {P_bias.shape}, expected ({0 if P is None else P.shape[1]},)")
     R = model_rules(text)
     probed = len(R["inputs"]) - len(R["declared"])
     if probed != (0 if P is None else P.shape[1]):
@@ -647,6 +674,7 @@ def load(path, tok):
     think = tuple(tok.convert_tokens_to_ids(s) if s in tok.get_vocab() else None for s in ("<think>", "</think>"))
     has_units = bool(R["used"] or R["adds"])
     return dict(R, net={key: mx.array(v) for key, v in R["net"].items()} if has_units else None, P=None if P is None else mx.array(P),
+                P_bias=None if P_bias is None else mx.array(P_bias), probe_layer=probe_layer,
                 tokens=mx.array(token_ids(tok, R["tokens"])) if R["tokens"] else None, k=k,
                 moves=[mx.array(token_ids(tok, col)) for col in ([x for x, _, _ in moves], [y for _, y, _ in moves])] + [mx.array([u for _, _, u in moves])] if moves else None,
                 bans=[(mx.array(token_ids(tok, ts)), u) for ts, u in R["bans"]], adds=vectors, think=think, tok=tok, conditions=conditions)
@@ -662,7 +690,7 @@ def start(model, ids):
 
 def restart(prompt):
     """Before each run of generate_step: no tokens seen yet."""
-    SIDE.update(seq=[], record=[], record_add=[], F=None, prompt=prompt, thinking=False, found={})
+    SIDE.update(seq=[], record=[], record_add=[], F=None, h=None, prompt=prompt, thinking=False, found={})
 
 
 def token_ids(tok, tokens):
@@ -679,22 +707,35 @@ def output_layer(model, h):
     return lm.lm_head(h) if hasattr(lm, "lm_head") else trunk(model).embed_tokens.as_linear(h)
 
 
-def states(model, data, ids):
-    """Teacher forcing on each {"ids", "tokens"} of data, at every answer position: the input of the output layer (float32), and of
-    the original logits those of ids, the log-sum-exp of the others, and the answer token's."""
+def states(model, data, ids, layer=-1):
+    """Teacher forcing on each {"ids", "tokens"} of data, at every answer position: the input of the output layer (or decoder LAYER's
+    output when LAYER >= 0, float32), and of the original logits those of ids, the log-sum-exp of the others, and the answer token's."""
     import mlx.core as mx
+    from .steer import HOOKS, install
+    layer = int(layer)
+    if layer != -1 and not (0 <= layer < len(model.layers)):
+        raise SystemExit(f"probe layer {layer} out of bounds for model with {len(model.layers)} layers")
     H, Z, rest, target = [], [], [], []
-    for x in data:
-        n = len(x["tokens"])
-        h = trunk(model)(mx.array([x["ids"] + x["tokens"]]))[0, -n - 1:-1]
-        z = output_layer(model, h).astype(mx.float32)
-        h = h.astype(mx.float32)
-        zt = mx.take_along_axis(z, mx.array(x["tokens"])[:, None], -1)[:, 0]
-        zi = z[:, ids]
-        z[:, ids] = -mx.inf
-        r = mx.logsumexp(z, -1)
-        mx.eval(h, zi, r, zt)
-        H.append(np.array(h)), Z.append(np.array(zi)), rest.append(np.array(r)), target.append(np.array(zt))
+    captured = {}
+    kept = HOOKS.get(id(model.layers[layer])) if layer >= 0 else None
+    try:
+        if layer >= 0:
+            install(model.layers[layer], lambda out: (captured.__setitem__("h", out), out)[1])
+        for x in data:
+            n = len(x["tokens"])
+            h_trunk = trunk(model)(mx.array([x["ids"] + x["tokens"]]))[0, -n - 1:-1]
+            h = captured["h"][0, -n - 1:-1] if layer >= 0 else h_trunk
+            z = output_layer(model, h_trunk).astype(mx.float32)
+            h = h.astype(mx.float32)
+            zt = mx.take_along_axis(z, mx.array(x["tokens"])[:, None], -1)[:, 0]
+            zi = z[:, ids]
+            z[:, ids] = -mx.inf
+            r = mx.logsumexp(z, -1)
+            mx.eval(h, zi, r, zt)
+            H.append(np.array(h)), Z.append(np.array(zi)), rest.append(np.array(r)), target.append(np.array(zt))
+    finally:
+        if layer >= 0:
+            install(model.layers[layer], kept)
     return np.concatenate(H), np.concatenate(Z), np.concatenate(rest), np.concatenate(target)
 
 
@@ -751,8 +792,9 @@ def probes(H, Y, balance):
     return np.stack(out, 1).astype(np.float32)
 
 
-def fit(model_dir, rules_file, data_file, out, balance=1.0, k=K, steps=0, lr=1e-3):
+def fit(model_dir, rules_file, data_file, out, balance=1.0, k=K, steps=0, lr=1e-3, layer=-1):
     from mlx_lm import load
+    layer = int(layer)
     text = open(rules_file, encoding="utf-8").read()
     R = model_rules(text)
     inputs, tokens, moves, net = R["inputs"][:len(R["inputs"]) - len(R["declared"])], R["tokens"], R["moves"], R["net"]
@@ -764,7 +806,7 @@ def fit(model_dir, rules_file, data_file, out, balance=1.0, k=K, steps=0, lr=1e-
     ids = token_ids(tok, tokens) + xs + ys  # the out tokens first, then the moved ones
     if int(steps) and len(set(ids)) < len(ids):
         raise SystemExit("a token both in an out line and in a move: tune would count its logit twice")
-    H, Z, rest, target = states(model, data, ids)
+    H, Z, rest, target = states(model, data, ids, layer=layer)
     Y = labels(data, inputs)
     P = probes(H, Y, float(balance))
     if int(steps):
@@ -777,4 +819,4 @@ def fit(model_dir, rules_file, data_file, out, balance=1.0, k=K, steps=0, lr=1e-
     reading = H @ P
     print("positions", len(H), {f: (int(Y[:, i].sum()), round(float((reading[Y[:, i] == 1, i] > 0.5).mean()), 3), round(float((reading[Y[:, i] == 0, i] > 0.5).mean()), 5))
                                 for i, f in enumerate(inputs)}, "(input: positives, share read > 0.5 there, share read > 0.5 elsewhere)", flush=True)
-    np.savez(out, rules=text, P=P, k=np.float32(k))
+    np.savez(out, rules=text, P=P, k=np.float32(k), layer=np.int32(layer))
