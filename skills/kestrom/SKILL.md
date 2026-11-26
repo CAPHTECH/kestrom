@@ -162,6 +162,17 @@ Use `kestrom kv` when standalone rules should supply specific facts (without pla
 
 What to claim: the mechanism is cached system-turn KV context, not a weight edit (~1 MB/fact on Gemma 4 E4B, ~10 MB/fact on Qwen3.5 `ArraysCache`). In batch mode, tier 1 `compare events` checks unmatched prompts (where `kv` records no event) up to the first event of another line (`events=[]` and bit-identical when no other line acts), and covers nothing after position `0` on matched prompts (`kv` set, not `null`); neither the accuracy of matched answers nor `kestrom kv chat` (no `compare events` check) is proven by the checker. `model_fingerprint` hashes config/tokenizer files and checks shard file sizes (not full shard bytes).
 
+## Cross-model steering and probe transfer with `kestrom bridge`
+
+Use `kestrom bridge` to transfer existing `kestrom steer direction` `.npz` files (`direction`, `cond`, `threshold`) to another model or family without collecting labeled steering pairs on the recipient model.
+
+1. Prepare a diverse, unlabeled multi-domain anchor file (`ANCHORS.json`, e.g., ~1,000–1,600 short bilingual/domain prompts covering the spaces you want aligned; each entry a string, `{"text": ...}`, `{"prompt": ...}`, or `{"ids": ...}`). Narrow or single-language anchors collapse off-manifold directions into the SVD nullspace.
+2. Fit the closed-form Procrustes bridge once: `kestrom bridge fit DONOR RECIPIENT ANCHORS.json BRIDGE.npz [LAYERS] [RANK]` (`"auto"` picks 6 aligned pairs at 25%–72% depth, or pass explicit `"17:22,20:26"` pairs; optionally compose `A→B` and `B→C` on shared middle layers via `kestrom bridge chain BRIDGE_AB.npz BRIDGE_BC.npz BRIDGE_AC.npz`).
+3. Map a donor `kestrom steer direction` `.npz` onto the recipient: `kestrom bridge map BRIDGE.npz DONOR_STEER.npz RECIPIENT_STEER.npz [RECIPIENT CALIB_PROMPTS.json]`. This rescales the rotated steering vector to the recipient's residual RMS norm (printed as `rms_norm(ALPHA)`) and translates the condition threshold either in closed form (zero forward passes) or by taking the median over unlabeled `CALIB_PROMPTS.json` on `RECIPIENT`.
+4. Use `RECIPIENT_STEER.npz` directly in a `.dsl` rules file (`in c: prompt RECIPIENT_STEER.npz LAYER` and `add RECIPIENT_STEER.npz LAYER: ALPHA*on`, setting `ALPHA` to the printed `rms_norm`), run `kestrom generate`, and verify with two runs of `kestrom-verify generate mlx` and `kestrom-verify compare events`.
+
+What to claim: tier 1 `U0`/`G2` via `kestrom-verify compare events` (outputs on prompts where the bridged `in ... prompt` condition does not fire are bit-identical to the recipient base model); steering effectiveness and condition precision on held-out prompts are measured separately.
+
 ## Rules that keep reports valid
 
 - Run the original twice, as two runs. The same output file given twice is not a second run, and `compare` does not tie a file to

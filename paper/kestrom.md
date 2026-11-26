@@ -177,6 +177,10 @@ each, 131,072 elements. Of those, 130,188 changed their bytes; 884 kept them. It
 the weights alone the edit is tier 2: teacher forcing on the original's answers left 47% of 1,633,169 positions bit-identical and
 changed the top token at 0.35%, yet no greedy answer of 100 stayed the same.
 
+### 5.3.1 Cross-model steering and condition bridging
+
+`kestrom bridge` fits closed-form active-subspace orthogonal Procrustes maps on sequence-mean hidden states of unlabeled anchors (`bridge fit`, optionally composed across models via `bridge chain`) and transfers `kestrom steer` `.npz` directions and prompt conditions (`bridge map`, rescaling steering norms to match the recipient residual RMS norm) for `kestrom generate --rules`. Bridging an English-to-Japanese steering direction and a science-vs-Python prompt condition trained on `Qwen3.5-4B` across `1,600` unlabeled bilingual prompts (`Qwen3.5-4B → Gemma 4 E4B` at layer `17 → 22`, rank `1,599`, `ALPHA=14.950`; `Qwen3.5-4B → Qwen3.5-0.8B` at `17 → 12`, rank `1,024`, `ALPHA=0.755`) onto `20` held-out prompts (`10` science + `10` Python, zero recipient task labels) gave `6/10` (`Gemma 4 E4B`) and `7/10` (`Qwen3.5-0.8B`) science prompts steered to Japanese with closed-form thresholds, rising to `10/10` on both models with unlabeled median calibration, while leaving all `10/10` Python prompts bit-identical (`U0 20/20`, `G2 20/20 PASS`, `cmp` identical). Chaining `Qwen3.5-4B → Gemma 4 E4B → Qwen3.5-0.8B` (`17 → 22 → 12`) agreed with the direct mapped steering vector at cosine `0.9346`.
+
 ### 5.4 Acceptance reports for edits with no range
 
 | Edit | Tensors changed (`diff`) | Top token changed (`measure`) | Greedy answers the same |
