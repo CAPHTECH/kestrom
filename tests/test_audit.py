@@ -8,7 +8,7 @@ from test_verify import folder
 from kestrom import audit as ka
 
 
-def test_audit_standalone_pass_and_byte_reproducible(tmp_path):
+def test_audit_standalone_no_findings_and_byte_reproducible(tmp_path):
     rng = np.random.default_rng(0)
     w = {
         "layers.0.mlp.down_proj.weight": (rng.standard_normal((128, 256)) * 0.05).astype(np.float32),
@@ -26,9 +26,40 @@ def test_audit_standalone_pass_and_byte_reproducible(tmp_path):
 
     doc = json.loads((out1 / "audit.json").read_text(encoding="utf-8"))
     assert doc["schema"] == "kestrom-audit-v1"
-    assert doc["verdict"] == "PASS"
+    assert doc["verdict"] == "NO_FINDINGS"
     assert [c["id"] for c in doc["checks"]] == ["mirror"]
+    assert doc["checks"][0]["status"] == "NO_FINDINGS"
+    assert "VERDICT: NO_FINDINGS" in (out1 / "audit.html").read_text(encoding="utf-8")
     sarif = json.loads((out1 / "audit.sarif").read_text(encoding="utf-8"))
+    assert sarif["runs"][0]["results"] == []
+
+
+def test_audit_with_base_and_matching_declaration_passes(tmp_path):
+    rng = np.random.default_rng(1)
+    w_base = {
+        "layers.0.mlp.down_proj.weight": (rng.standard_normal((128, 256)) * 0.05).astype(np.float32),
+        "layers.1.mlp.down_proj.weight": (rng.standard_normal((128, 256)) * 0.05).astype(np.float32),
+    }
+    w_edit = dict(w_base)
+    w_edit["layers.0.mlp.down_proj.weight"] = w_base["layers.0.mlp.down_proj.weight"] + 0.001
+
+    base = folder(tmp_path / "base", w_base)
+    edit = folder(tmp_path / "edit", w_edit)
+    decl = tmp_path / "declared.json"
+    decl.write_text(json.dumps({"layers.0.mlp.down_proj.weight": "all"}), encoding="utf-8")
+
+    out_dir = tmp_path / "out_pass"
+    ka.audit(str(edit), str(out_dir), str(base), str(decl), mode="nf4")
+
+    doc = json.loads((out_dir / "audit.json").read_text(encoding="utf-8"))
+    assert doc["verdict"] == "PASS"
+    assert doc["checks"][0]["id"] == "diff"
+    assert doc["checks"][0]["tier"] == 2
+    assert doc["checks"][0]["status"] == "PASS"
+    assert doc["checks"][1]["id"] == "mirror"
+    assert doc["checks"][1]["status"] == "NO_FINDINGS"
+    assert "VERDICT: PASS" in (out_dir / "audit.html").read_text(encoding="utf-8")
+    sarif = json.loads((out_dir / "audit.sarif").read_text(encoding="utf-8"))
     assert sarif["runs"][0]["results"] == []
 
 
@@ -53,7 +84,9 @@ def test_audit_with_base_and_declared_flags_undeclared_change(tmp_path):
 
     doc = json.loads((out_dir / "audit.json").read_text(encoding="utf-8"))
     assert doc["verdict"] == "FLAGGED"
-    assert doc["checks"][0]["id"] == "diff" and doc["checks"][0]["status"] == "FLAGGED"
+    assert doc["checks"][0]["id"] == "diff"
+    assert doc["checks"][0]["tier"] == 2
+    assert doc["checks"][0]["status"] == "FLAGGED"
     assert "layers.1.mlp.down_proj.weight" in doc["checks"][0]["outside"]
     sarif = json.loads((out_dir / "audit.sarif").read_text(encoding="utf-8"))
     assert sarif["runs"][0]["results"][0]["ruleId"] == "KESTROM-DIFF-UNDECLARED"

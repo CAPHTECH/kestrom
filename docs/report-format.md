@@ -23,3 +23,17 @@ Every report is one JSON object written with `indent=1` and no times. The keys p
 | `rows` | `compare` | One entry per prompt: `id`, `original twice the same`, `same`, `first difference`, `in the range`; tied to the embedding, `changed id in the prompt` |
 
 The verdict is computed from these keys (`kestrom_verify.report.verdict`), so `summary` gives the same PASS / FAIL as the command did.
+
+## Acceptance audit report (`kestrom audit`)
+
+`kestrom audit` (`edit/`) writes deterministic, timestamp-free `audit.json`, `audit.html`, and `audit.sarif` alongside `mirror.json` (and `diff.json` when `BASE_DIR` is given). `verdict` is `PASS` only when tier 2 `diff` + `DECLARED.json` passes D and `mirror` flags nothing, `NO_FINDINGS` when no declaration was checked and `mirror` flags nothing, and `FLAGGED` (exiting 1) otherwise.
+
+| Key | Written by | Content |
+|---|---|---|
+| `schema` | `audit` | `"kestrom-audit-v1"` |
+| `verdict` | `audit` | `"PASS"`, `"NO_FINDINGS"`, or `"FLAGGED"` |
+| `model` | `audit` | `{"path": ..., "files": {path: SHA-256}}` for `MODEL_DIR` |
+| `base` | `audit` | `{"path": ..., "files": {path: SHA-256}}` for `BASE_DIR`, or `null` |
+| `checks` | `audit` | Ordered list of checks (`diff` at `tier` 2 when `BASE_DIR` is given, with `status` `PASS` / `MEASURED` / `FLAGGED`, `summary`, `outside`; `mirror` at `tier` 3 with `status` `NO_FINDINGS` / `FLAGGED`, `quantizer`, `tensors_scanned`, `flagged`, `reasons`, `weight_summary`) |
+| `reproduce` | `audit` | Shell commands to reproduce the underlying `kestrom-verify diff` and `kestrom inspect mirror` runs |
+| `limitations` | `audit` | Explicit tier scope statements (tier 2 `diff` does not bound outputs; tier 3 `mirror` is statistical evidence, not mathematical proof) |

@@ -8,7 +8,7 @@ description: Use Kestrom to edit a language model inside a range and check the e
 Two packages. `kestrom-verify` (`verify/`, Apache-2.0) is the checker: it reads two models and their outputs and writes a report.
 `kestrom` (`edit/`, PolyForm or a commercial license) holds the editing tools. Help is in each module's docstring:
 `kestrom-verify` and `kestrom` with no arguments, `kestrom <command> --help`, `python -m pydoc kestrom.<module>` (generate, kv, ifc, rules, steer, loopguard, rows,
-trigger, find, mlp, units, train, inspect). Read the help of a command before running it; this skill is a map, not the reference.
+trigger, find, mlp, units, train, inspect, audit). Read the help of a command before running it; this skill is a map, not the reference.
 
 Install from a clone: `pip install ./verify[mlx] ./edit[mlx]` (`./verify[torch] ./edit[torch]` for PyTorch/CUDA, supported by `kestrom-verify` and `kestrom ifc`). Without installing, from the
 repository root: `PYTHONPATH=verify:edit python3 -m kestrom_verify ...` and `PYTHONPATH=verify:edit python3 -m kestrom ...`.
@@ -48,6 +48,7 @@ Never state a guarantee no check computed. If U0 fails, G1 and G2 in that report
 | What a received model changed | — | `diff` (with the declaration if one was given), `measure` (`examples/acceptance-report`); for a claimed LoRA or QLoRA, `kestrom inspect quant` and `kestrom inspect shape` (rank against the claim); for a Qwen3.5 GGUF file, `kestrom inspect gguf` first (Q4_K_M tested) |
 | Look for a backdoor in a delivered fine-tune | `kestrom inspect` | see the `kestrom-acceptance` skill |
 | Check a single checkpoint (no original model, no trigger) for quantization-conditioned backdoors and disarm flagged tensors | `kestrom inspect mirror`, then `kestrom inspect disarm` | `kestrom-verify diff` on the disarmed copy (tier 3: evidence only, no guarantee) |
+| One-command acceptance audit (optional `diff` + `inspect mirror`) into `audit.json`, `audit.html`, and `audit.sarif` | `kestrom audit MODEL_DIR OUT_DIR [BASE_DIR\|none] [DECLARED.json\|none] [MODE] [BITS] [GROUP] [RUNTIME]` | `PASS` only when tier 2 `diff` + `DECLARED.json` passes D and `mirror` flags nothing; `NO_FINDINGS` without a declaration; `FLAGGED` (exit 1) otherwise |
 
 A ban is of tokens, not characters: `kestrom rows ban` matches a string inside every token that holds it, also inside correct
 words, and byte-level tokens can still spell the string (in Qwen3.5, 的 as token 95725 then 226). To keep a string out, use a

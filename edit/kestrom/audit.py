@@ -1,7 +1,7 @@
 """One-command acceptance audit: weight diff (optional BASE_DIR + DECLARED.json) and anti-quantization mirror scan, producing deterministic audit.json, audit.html, and audit.sarif (no timestamps; rebuilds byte for byte).
   kestrom audit MODEL_DIR OUT_DIR [BASE_DIR|none] [DECLARED.json|none] [MODE] [BITS] [GROUP] [RUNTIME]
       writes diff.json (when BASE_DIR is given), mirror.json, audit.json, audit.html, and audit.sarif into OUT_DIR.
-      Exits 0 on PASS, 1 if DECLARED has outside changes or mirror flags any tensor.
+      Exits 0 on PASS (BASE_DIR + DECLARED.json checked with no outside changes and no mirror flags) or NO_FINDINGS (no declaration checked and no mirror flags), 1 on FLAGGED.
       Refuses an OUT_DIR inside MODEL_DIR or BASE_DIR, and a model of which mirror scans no tensor."""
 import html
 import json
@@ -70,11 +70,11 @@ def _render_sarif(doc: dict[str, Any]) -> dict[str, Any]:
 def _render_html(doc: dict[str, Any]) -> str:
     esc = html.escape
     verdict = doc["verdict"]
-    badge_cls = "badge-pass" if verdict == "PASS" else "badge-fail"
+    badge_cls = "badge-pass" if verdict == "PASS" else ("badge-neutral" if verdict == "NO_FINDINGS" else "badge-fail")
     rows = []
     for chk in doc["checks"]:
         st = chk["status"]
-        st_cls = "badge-pass" if st == "PASS" else ("badge-warn" if st == "MEASURED" else "badge-fail")
+        st_cls = "badge-pass" if st == "PASS" else ("badge-neutral" if st == "NO_FINDINGS" else ("badge-warn" if st == "MEASURED" else "badge-fail"))
         if chk["id"] == "diff":
             s = chk["summary"]
             detail = (
@@ -112,7 +112,7 @@ def _render_html(doc: dict[str, Any]) -> str:
         "header{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid #1f2328;padding-bottom:14px;margin-bottom:20px}\n"
         "h1{margin:0 0 4px;font-size:20px}h2{font-size:15px;margin:22px 0 8px;padding-left:10px;border-left:4px solid #0969da}\n"
         ".badge{display:inline-block;padding:3px 10px;border-radius:999px;font-weight:700;font-size:12px}\n"
-        ".badge-pass{background:#dafbe1;color:#116329}.badge-warn{background:#fff8c5;color:#7d4e00}.badge-fail{background:#ffebe9;color:#cf222e}\n"
+        ".badge-pass{background:#dafbe1;color:#116329}.badge-neutral{background:#eaeef2;color:#24292f}.badge-warn{background:#fff8c5;color:#7d4e00}.badge-fail{background:#ffebe9;color:#cf222e}\n"
         "table{width:100%;border-collapse:collapse;margin:8px 0 14px;font-size:13px}th,td{border:1px solid #d0d7de;padding:7px 9px;text-align:left;vertical-align:top}\n"
         "th{background:#f6f8fa}.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;word-break:break-all}\n"
         "pre{background:#161b22;color:#e6edf3;padding:12px 14px;border-radius:8px;overflow-x:auto;font-size:12px}\n"
@@ -180,7 +180,7 @@ def audit(
     mres = json.loads(mirror_out.read_text(encoding="utf-8"))
     if not mres["tensors_scanned"]:
         raise SystemExit(f"mirror scanned no tensor of {model_dir} (no .safetensors in the folder, or no tensor divides by GROUP)")
-    mirror_status = "FLAGGED" if mres.get("flagged") else "PASS"
+    mirror_status = "FLAGGED" if mres.get("flagged") else "NO_FINDINGS"
     checks.append({
         "id": "mirror",
         "tier": 3,
@@ -196,7 +196,12 @@ def audit(
         f"kestrom inspect mirror {model_dir} mirror.json none {q['bits']} {q['group']} {q['mode']} {q['runtime']}"
     )
 
-    verdict = "FLAGGED" if (diff_status == "FLAGGED" or mirror_status == "FLAGGED") else "PASS"
+    if diff_status == "FLAGGED" or mirror_status == "FLAGGED":
+        verdict = "FLAGGED"
+    elif diff_status == "PASS":
+        verdict = "PASS"
+    else:
+        verdict = "NO_FINDINGS"
     doc: dict[str, Any] = {
         "schema": "kestrom-audit-v1",
         "verdict": verdict,
@@ -219,5 +224,5 @@ def audit(
         f"({len(mres['flagged'])} flagged of {mres['tensors_scanned']}) | out={out_path}",
         flush=True,
     )
-    if verdict != "PASS":
+    if verdict == "FLAGGED":
         raise SystemExit(1)

@@ -22,6 +22,8 @@ backdoors whose target is one ordinary token. Outside that, it has not been trie
 - To screen a single FP16/BF16 checkpoint for quantization-conditioned backdoors when no original model is available (or before quantizing it):
   `kestrom inspect mirror MODEL mirror.json [prompts.json|none] [bits|none] [group|none] [mode] [runtime]` (`mode` in `affine`, `nf4`, `fp4`, `int8`; `runtime` in `mlx`, `torch`), and to neutralize only flagged tensors before quantization:
   `kestrom inspect disarm MODEL mirror.json DST [seed] [runtime]` (check changed tensors with `kestrom-verify diff MODEL DST diff.json`). Tested with MLX affine 4-bit group 64 on Qwen3.5-0.8B/4B and PyTorch/`bitsandbytes` NF4/FP4 (4-bit group 64) and row-wise INT8 on Qwen3.5-0.8B/4B and DeepSeek-R1-Distill-Llama-8B (NVIDIA L4 CUDA; note natural extreme-outlier layers with `outlier_max` ~900 in Llama-8B can raise spectral `rho1` under 4-bit NF4/FP4 while `b85`, INT8, and behavior stay benign).
+- For one-command deterministic acceptance artifacts (`audit.json`, `audit.html`, `audit.sarif`) combining optional `diff` (`BASE_DIR` + `DECLARED.json`) and `kestrom inspect mirror`:
+  `kestrom audit MODEL_DIR OUT_DIR [BASE_DIR|none] [DECLARED.json|none] [MODE] [BITS] [GROUP] [RUNTIME]` (`PASS` only when tier 2 `diff` + `DECLARED.json` passes D and `mirror` flags nothing; `NO_FINDINGS` standalone; `FLAGGED` and exit 1 otherwise).
 - The declaration: LoRA rank, scale, target projections (`keys`), iterations, learning rate, and every other training setting
   (layers, batch size, maximum length, whether the prompt is masked from the loss, dropout); the quantization the LoRA was trained
   on (`mode`, `bits`, `group`), or none; whether the merged model was quantized again before delivery.
