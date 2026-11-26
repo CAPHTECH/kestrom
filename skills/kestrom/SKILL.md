@@ -88,7 +88,10 @@ output is the original's until the first recorded event, not that the condition 
 `{"NAME": "all" | [[first row, end row], ...]}`, NAME a tensor, another file of the folder (`config.json`) or `__metadata__`; an
 added, removed or retyped tensor, a changed file and changed metadata are inside only `"all"`. A model saved again by a library
 can gain `__metadata__` (`{"format": "pt"}`) and fails D on that alone: read `diff`'s list of what is outside before you call it
-a violation. Then `measure` to count how much the outputs moved.
+a violation. Then `measure` to count how much the outputs moved. For a keyed or relation write (`kestrom edit keyed`), `diff` and
+`measure` check only changed weights and logit movement, and testing inside the training context alone can overstate generalization:
+evaluate both direct recall (Level 1) and downstream one-hop use (Level 2) on unseen contexts (new distractors and swapped
+attributes), since a write can fire cleanly (`κ·x ≈ 1`) and keep stated facts while dropping sharply outside its training context.
 
 **No guarantee (tier 3).** `kestrom-verify measure RUNTIME ORIGINAL EDITED inputs.json measure.json [base.jsonl base2.jsonl
 edited.jsonl]`: positions whose logits are the same bytes, whose top token changed, prompts with the same greedy output; U0 only.

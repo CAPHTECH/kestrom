@@ -297,6 +297,8 @@ last, the one wrong item had the largest push, 14.6, and a right one had 14.5). 
 city was 30 and 31 of 32 with the relation stated in the prompt, 19 and 16 with no relation, and 26 and 15 with it written in the
 last setting: the written relation reached that comparison in one set and not in the other.
 
+We then moved the rebuilt second-set write (`diff` D PASS; exact home reproduction at 32/32 org, 32/32 city, 32/32 stated city, 31/32 Q's organization, 15/32 choice) to 64 fresh unseen contexts with new distractors and unseen organization cities per person (`measure` U0 256/256 PASS, 1,011/21,993 top-token changes, max top-logit change 16.92). The results are report-only because context-stated two-way choice was 56/64 against the 0.90 precondition while context-stated organization, city and stated facts were all 64/64. Even though the key fired cleanly at P in unseen city prompts (median `κ·x` 0.9616, min 0.8197, other-key max median 0.0132, median push 100.65 against 103.22 in the training context) and stated facts stayed intact (64/64 organization's city, 63/64 Q's organization), unseen recall dropped to 40/64 org (vs 22/64 unwritten) and one-hop use dropped to 32/64 city (vs 26/64 unwritten). Adding the single-context fitted values directly by a forward hook on the unwritten model gave nearly the same counts (38/64 org, 32/64 city), showing that the drop outside the training context lies in the fitted value rather than key firing.
+
 ## 6. Related work
 
 Fine-Tuning Integrity [1] proves, with zero-knowledge proofs, that a deployed model differs from a trusted base only within a declared

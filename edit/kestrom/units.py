@@ -24,7 +24,11 @@ here is ours (said below). Units are LAYER:INDEX:VALUE, comma separated.
       left). Reports ‖k‖/‖μ‖ (below 0.05 the key leaks, as that documentation warns) and κ·x at the two kinds of positions.
       κ is built to be 0 only on the span of Q: positions that share an entry are covered only as their mean, and inputs not in
       DATA can open it. In our runs (Qwen3.5-9B, paper §5.7) a key written at a name opened on other names in the same slot of a
-      question; one entry per position, plus that slot filled by names used nowhere else, kept another stated fact in 31 of 32
+      question; one entry per position, plus that slot filled by names used nowhere else, kept another stated fact in 31 of 32.
+      Those 32/32 and 31–32/32 results held in the training context; when the rebuilt second-set write was moved to 64 unseen
+      contexts (new distractors and organization cities; report-only, context choice ceiling 56/64), the key still fired cleanly at P
+      (median κ·x 0.96, stated facts 64/64 and 63/64) while unseen accuracy fell to 40/64 org and 32/64 city, matching a direct hook
+      of the fitted values (38/64 and 32/64). Evaluate keyed writes on unseen contexts at both direct recall and downstream use.
   kestrom edit neuron-write MODEL DATA.json DIRECTION.npz LAYER ALPHA DST [one|capped]
       FiSH: neurons of LAYER's MLP (the least used) rewritten to write ALPHA d where the key κ (built as for keyed, on the MLP input)
       reads ρ = κ·x. one (default): a neuron with gate row 4κ, up row κ, down column ALPHA d / silu(4): writes silu(4ρ)ρ/silu(4) ALPHA d,
