@@ -1,14 +1,15 @@
 """One-command acceptance audit: weight diff (optional BASE_DIR + DECLARED.json) and anti-quantization mirror scan, producing deterministic audit.json, audit.html, and audit.sarif (no timestamps; rebuilds byte for byte).
   kestrom audit MODEL_DIR OUT_DIR [BASE_DIR|none] [DECLARED.json|none] [MODE] [BITS] [GROUP] [RUNTIME]
       writes diff.json (when BASE_DIR is given), mirror.json, audit.json, audit.html, and audit.sarif into OUT_DIR.
-      Exits 0 on PASS, 1 if DECLARED has outside changes or mirror flags any tensor."""
+      Exits 0 on PASS, 1 if DECLARED has outside changes or mirror flags any tensor.
+      Refuses an OUT_DIR inside MODEL_DIR or BASE_DIR, and a model of which mirror scans no tensor."""
 import html
 import json
 from pathlib import Path
 from typing import Any
 
 from kestrom_verify import diff as vdiff
-from kestrom_verify import report, weights
+from kestrom_verify import weights
 
 from . import mirror
 
@@ -149,22 +150,24 @@ def audit(
         raise SystemExit("DECLARED.json requires BASE_DIR")
 
     out_path = Path(out_dir)
+    for d in (model_dir, base):
+        if d is not None and out_path.resolve().is_relative_to(Path(d).resolve()):
+            raise SystemExit(f"OUT_DIR {out_dir} is inside {d}: the audit would read its own reports as model files")
     out_path.mkdir(parents=True, exist_ok=True)
 
     checks = []
     reproduce = []
     diff_status = None
+    model_files = base_files = None
     if base is not None:
-        declared = report.read(decl_path) if decl_path is not None else None
-        diff_res = vdiff.diff(base, model_dir, declared)
-        if decl_path is not None:
-            diff_res["declaration file"] = {Path(decl_path).name: report.sha(decl_path)}
+        diff_res = vdiff.declared_diff(base, model_dir, decl_path)
+        model_files, base_files = diff_res["edited"], diff_res["original"]
         (out_path / "diff.json").write_text(json.dumps(diff_res, ensure_ascii=False, indent=1), encoding="utf-8")
         outside = diff_res.get("declared", {}).get("outside", [])
-        diff_status = ("FLAGGED" if outside else "PASS") if declared is not None else "MEASURED"
+        diff_status = ("FLAGGED" if outside else "PASS") if decl_path is not None else "MEASURED"
         checks.append({
             "id": "diff",
-            "tier": 2 if declared is not None else 3,
+            "tier": 2,
             "status": diff_status,
             "summary": diff_res["diff"],
             "outside": outside,
@@ -175,6 +178,8 @@ def audit(
     mirror_out = out_path / "mirror.json"
     mirror.mirror(model_dir, str(mirror_out), None, bits, group, mode, runtime)
     mres = json.loads(mirror_out.read_text(encoding="utf-8"))
+    if not mres["tensors_scanned"]:
+        raise SystemExit(f"mirror scanned no tensor of {model_dir} (no .safetensors in the folder, or no tensor divides by GROUP)")
     mirror_status = "FLAGGED" if mres.get("flagged") else "PASS"
     checks.append({
         "id": "mirror",
@@ -195,8 +200,8 @@ def audit(
     doc: dict[str, Any] = {
         "schema": "kestrom-audit-v1",
         "verdict": verdict,
-        "model": {"path": str(model_dir), "files": _artifact_files(Path(model_dir))},
-        "base": {"path": str(base), "files": _artifact_files(Path(base))} if base is not None else None,
+        "model": {"path": str(model_dir), "files": model_files or _artifact_files(Path(model_dir))},
+        "base": {"path": str(base), "files": base_files} if base is not None else None,
         "checks": checks,
         "reproduce": reproduce,
         "limitations": [

@@ -17,8 +17,8 @@ def test_audit_standalone_pass_and_byte_reproducible(tmp_path):
     model = folder(tmp_path / "model", w)
     out1, out2 = tmp_path / "out1", tmp_path / "out2"
 
-    ka.audit(str(model), str(out1))
-    ka.audit(str(model), str(out2))
+    ka.audit(str(model), str(out1), mode="nf4")
+    ka.audit(str(model), str(out2), mode="nf4")
 
     for name in ("audit.json", "audit.html", "audit.sarif"):
         assert (out1 / name).is_file()
@@ -48,7 +48,7 @@ def test_audit_with_base_and_declared_flags_undeclared_change(tmp_path):
 
     out_dir = tmp_path / "out_fail"
     with pytest.raises(SystemExit) as exc:
-        ka.audit(str(edit), str(out_dir), str(base), str(decl))
+        ka.audit(str(edit), str(out_dir), str(base), str(decl), mode="nf4")
     assert exc.value.code == 1
 
     doc = json.loads((out_dir / "audit.json").read_text(encoding="utf-8"))
@@ -57,6 +57,15 @@ def test_audit_with_base_and_declared_flags_undeclared_change(tmp_path):
     assert "layers.1.mlp.down_proj.weight" in doc["checks"][0]["outside"]
     sarif = json.loads((out_dir / "audit.sarif").read_text(encoding="utf-8"))
     assert sarif["runs"][0]["results"][0]["ruleId"] == "KESTROM-DIFF-UNDECLARED"
+
+
+def test_audit_refuses_out_inside_model_and_an_empty_scan(tmp_path):
+    model = folder(tmp_path / "model", {"lm_head.weight": np.zeros((16, 64), np.float32)})
+    with pytest.raises(SystemExit, match="inside"):
+        ka.audit(str(model), str(model / "audit"), mode="nf4")
+    assert not (model / "audit").exists()
+    with pytest.raises(SystemExit, match="scanned no tensor"):
+        ka.audit(str(tmp_path / "empty"), str(tmp_path / "out"), mode="nf4")
 
 
 def test_audit_flags_mirror_anomaly_with_sarif(tmp_path, monkeypatch):
