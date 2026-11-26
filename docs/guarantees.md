@@ -110,7 +110,7 @@ proof that the model is clean (`python -m pydoc kestrom.inspect`, `kestrom.mirro
 - Agreement across runtimes. The comparison is between the original and the edited model in the same runtime. llama.cpp and MLX give
   different greedy outputs for the same original weights.
 - Sampling. The guarantees are about teacher-forced logits and greedy decoding.
-- Not tested: Linux/CUDA outside `kestrom ifc`, `kestrom inspect mirror`/`disarm`, `kestrom audit`, and `kestrom-verify` (tested on NVIDIA L4/T4 CUDA 13.0 with Qwen3.5-0.8B/4B; other `torch` commands ran on macOS MPS/CPU only), imatrix quantization and quantization types other than Q4_K_M, models whose output layer is tied to the
+- Not tested: Linux/CUDA outside `kestrom ifc`, `kestrom inspect mirror`/`disarm`, `kestrom audit`, and `kestrom-verify generate torch` / `compare events` / `diff` (tested on NVIDIA L4/T4 CUDA 13.0 with `bitsandbytes`, on Qwen3.5-0.8B/4B and, for a benign `mirror` scan, `DeepSeek-R1-Distill-Llama-8B`; other `torch` commands ran on macOS MPS/CPU only), imatrix quantization and quantization types other than Q4_K_M, models whose output layer is tied to the
   embedding in GGUF (tested in MLX, with Qwen3.5-0.8B), edits of input rows.
 
 ## Commands

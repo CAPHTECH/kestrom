@@ -46,7 +46,7 @@ a loop or a condition was really there.
 ## The editing tools
 
 **Product scope:**
-- **Supported** (enterprise evaluation / audit): `kestrom-verify` (Apache-2.0), `kestrom audit`, `kestrom inspect` (including `mirror` and `disarm`), `kestrom ifc` (`control` / `firewall`), `kestrom kv` + `kestrom generate --rules` (`open`, `loopguard`, `phrase`, `add`, `ban`), `kestrom rows ban`, and `kestrom bridge`.
+- **Supported** (enterprise evaluation / audit): `kestrom-verify` (Apache-2.0), `kestrom audit`, `kestrom inspect` (including `mirror` and `disarm`), `kestrom ifc` (`control` / `firewall`), `kestrom kv` + `kestrom generate --rules` (`open`, `loopguard`, `phrase`, `add`, `ban`), `kestrom rules` (`fit`, `run`, `build`, `weigh`), `kestrom steer`, `kestrom rows ban-row` / `ban`, and `kestrom bridge`.
 - **Experimental** (research / reproduction): `kestrom edit`, `kestrom trigger`, `kestrom find`, `kestrom rows lsq` / `ftpo`, `kestrom rules write-mlp`, `kestrom train sft-data`, and `kestrom merge`.
 
 Every tool is in, whether or not it reached the target we set for it. The table gives the tier and what we measured, with the
@@ -221,10 +221,10 @@ On a separate 4-occupational-role non-exact prompt-probe benchmark (`google/gemm
 ## Quickstart
 
 ```sh
-pip install kestrom-verify             # Apache-2.0 checker on PyPI (add [torch], [mlx], or [gguf])
+pip install "kestrom-verify[mlx]"      # Apache-2.0 checker on PyPI ([torch] or [gguf] in place of [mlx])
 
 # one-command acceptance audit (from a clone; emits deterministic audit.json, audit.html, audit.sarif)
-pip install "./edit[torch]"
+pip install "./verify[torch]" "./edit[torch]"
 kestrom audit MODEL_DIR OUT_DIR none none nf4 4 64 torch
 
 # the range of a row edit, from the bytes (safetensors folders or GGUF files)
@@ -266,7 +266,7 @@ delivered fine-tune with `kestrom inspect`), restate these documents for an agen
   readers of our blind tests named the trigger's words for at most 2 of 5 backdoors, and 2 of 4. In our Q4_K_M GGUF test `shape`
   flagged nothing on all 12 models (the rounding hid the LoRA's rank). `inspect gguf` was tested on Qwen3.5 with Q4_K_M only.
 - Tested primarily on Apple Silicon: MLX and llama.cpp with Qwen3.5 (0.8B, 4B, 9B), Qwen3-8B, and (for `kestrom kv` / `kv:` and `kestrom bridge`) Gemma 4 E4B; PyTorch with Qwen3.5 0.8B and 9B on MPS
-  and 0.8B on the CPU; and Linux + NVIDIA L4/T4 CUDA (`torch` 2.14.1+cu130, `bitsandbytes`) for `kestrom ifc`, `kestrom inspect mirror`/`disarm`, `kestrom audit`, and `kestrom-verify` on Qwen3.5-0.8B/4B (plus benign `DeepSeek-R1-Distill-Llama-8B` mirror scan on L4). Not tested on Linux/CUDA yet: weight edits (`rows`, `edit`), `kv`/`rules`/`bridge`, `inspect` commands outside `mirror`/`disarm`, `logits`/`measure`, models whose output layer is tied to the embedding in GGUF. For a tied output
+  and 0.8B on the CPU; and Linux + NVIDIA L4/T4 CUDA (`torch` 2.14.1+cu130, `bitsandbytes`) for `kestrom ifc`, `kestrom inspect mirror`/`disarm`, `kestrom audit`, and `kestrom-verify generate torch` / `compare events` / `diff` on Qwen3.5-0.8B/4B (plus benign `DeepSeek-R1-Distill-Llama-8B` mirror scan on L4). Not tested on Linux/CUDA yet: weight edits (`rows`, `edit`), `kv`/`rules`/`bridge`, `inspect` commands outside `mirror`/`disarm`, `logits`/`measure`, models whose output layer is tied to the embedding in GGUF. For a tied output
   layer (Qwen3.5-0.8B), a changed row is also an input: the guarantees hold for the inputs (prompts, teacher-forced sequences)
   that hold no changed id, and the reports count the others.
 

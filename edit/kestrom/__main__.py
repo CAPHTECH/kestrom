@@ -22,7 +22,7 @@ Supported commands (enterprise / audit / runtime):
                                                         conditions and fitted rules probes across models (tier 1 with kestrom generate)
   rows ban-row MODEL INPUTS.json ROW.npy                the row that bans a token
   rows ban SRC TOKENIZER LIST.txt ROW.npy DST           ban tokens: their rows of the output layer set to ROW
-                                                        (every rows command: every other byte the same)
+                                                        (every rows command, lsq and ftpo too: every other byte the same)
   inspect {quant, base, shape, lens, behavior, trigger, gguf, mirror, disarm} ...
                                                         look for a backdoor in a delivered fine-tune (reads; base, gguf and disarm write a folder; tier 3; mirror/disarm: MLX and PyTorch/CUDA)
   audit MODEL_DIR OUT_DIR [BASE_DIR|none] [DECLARED.json|none] [MODE] [BITS] [GROUP] [RUNTIME]
