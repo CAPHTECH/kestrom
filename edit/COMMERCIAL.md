@@ -42,7 +42,7 @@ What is not in it:
 The commercial license is governed by the laws of Japan, and the Tokyo District Court has exclusive jurisdiction in the first
 instance over any dispute about it.
 
-Before you buy: `kestrom` is tested only on Apple Silicon, not on Linux or CUDA (README, "What Kestrom does not guarantee"). Use
+Before you buy: `kestrom ifc`, `kestrom inspect mirror`/`disarm`, `kestrom audit`, and `kestrom-verify` are tested on both Apple Silicon (MLX) and Linux/NVIDIA CUDA (`torch`); `kv`, `rules`, `bridge`, and `rows` are tested on Apple Silicon (MLX) only (`docs/guarantees.md`). Use
 the free trial to check it on your application: payments are not refunded.
 
 ## How to buy
