@@ -52,13 +52,7 @@ def fit_procrustes(Z_a, Z_b, rank=None):
     U, _, Vt = np.linalg.svd(Z_br.T @ Z_ar, full_matrices=False)
     M = V_b @ (U @ Vt) @ V_a.T
 
-    if rank is None:
-        denom = float(np.linalg.norm(Za_c, "fro"))
-        numer = float(np.linalg.norm(Zb_c, "fro"))
-    else:
-        denom = float(np.linalg.norm(Z_ar, "fro"))
-        numer = float(np.linalg.norm(Z_br, "fro"))
-    scale = numer / denom
+    scale = float(np.linalg.norm(Z_br, "fro")) / float(np.linalg.norm(Z_ar, "fro"))
     rms_a = float(np.sqrt(np.mean(np.sum(Za_c * Za_c, axis=1))))
     rms_b = float(np.sqrt(np.mean(np.sum(Zb_c * Zb_c, axis=1))))
     return dict(mu_a=mu_a, mu_b=mu_b, M=M, scale=scale, rms_a=rms_a, rms_b=rms_b, rank=r)

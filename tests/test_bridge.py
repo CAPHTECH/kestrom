@@ -28,6 +28,16 @@ def test_fit_procrustes_exact_recovery_and_rank_cap():
     f_cap = bridge.fit_procrustes(Za[:180], Zb[:180], rank=16)
     assert f_cap["rank"] == 16
 
+    # Asymmetric full-rank matrices: omitting rank and passing explicit rank=r must agree identically
+    rng = np.random.default_rng(123)
+    Za_w = rng.standard_normal((60, 40))
+    Zb_n = rng.standard_normal((60, 16))
+    f_auto = bridge.fit_procrustes(Za_w, Zb_n)
+    f_exp = bridge.fit_procrustes(Za_w, Zb_n, rank=16)
+    assert f_auto["rank"] == f_exp["rank"] == 16
+    assert abs(f_auto["scale"] - f_exp["scale"]) < 1e-12
+    assert np.allclose(f_auto["M"], f_exp["M"], atol=1e-12)
+
 
 def test_map_arrays_rms_norm_and_closed_form_threshold():
     Za, Zb, Qa, Qb, _, _ = _make_synth_spaces(scale=4.0)
