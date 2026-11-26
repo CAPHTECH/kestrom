@@ -10,7 +10,7 @@ Two packages. `kestrom-verify` (`verify/`, Apache-2.0) is the checker: it reads 
 `kestrom-verify` and `kestrom` with no arguments, `kestrom <command> --help`, `python -m pydoc kestrom.<module>` (generate, kv, ifc, rules, steer, loopguard, rows,
 trigger, find, mlp, units, train, inspect, audit). Read the help of a command before running it; this skill is a map, not the reference.
 
-Install from a clone: `pip install ./verify[mlx] ./edit[mlx]` (`./verify[torch] ./edit[torch]` for PyTorch/CUDA, supported by `kestrom-verify` and `kestrom ifc`). Without installing, from the
+Install the Apache-2.0 checker from PyPI (`pip install "kestrom-verify[mlx]"` or `"kestrom-verify[torch]"` / `"kestrom-verify[gguf]"`), or install both packages from a clone: `pip install ./verify[mlx] ./edit[mlx]` (`./verify[torch] ./edit[torch]` for PyTorch/CUDA, supported by `kestrom-verify`, `kestrom ifc`, `kestrom inspect mirror`/`disarm`, and `kestrom audit`). Without installing, from the
 repository root: `PYTHONPATH=verify:edit python3 -m kestrom_verify ...` and `PYTHONPATH=verify:edit python3 -m kestrom ...`.
 Other `kestrom` commands that run or quantize a model use MLX on Apple Silicon (each help says what a command reads).
 
@@ -192,7 +192,7 @@ What to claim: tier 1 `U0`/`G2` via `kestrom-verify compare events` (outputs bef
   input by file name and SHA-256, so a rebuild needs the same file names. Every `kestrom-verify`
   command but `generate` and `summary` prints each check as `name: count of total PASS|FAIL` and exits 1 if one fails.
 - `logits` stops when W fails (use `measure`) or when the output layer is quantized into several tensors (use `compare`).
-- Not tested (as `docs/guarantees.md` lists them): Linux, CUDA (the `torch` runtime ran on macOS), imatrix quantization and
+- Not tested (as `docs/guarantees.md` lists them): Linux/CUDA outside `kestrom ifc`, `kestrom inspect mirror`/`disarm`, and `kestrom-verify generate torch` / `compare events` / `diff` (`kestrom audit` invokes `diff` and `inspect mirror` and is unit-tested on Linux CI with NumPy `nf4`; other `torch` commands ran on macOS), imatrix quantization and
   quantization types other than Q4_K_M, models whose output layer is tied to the embedding in GGUF (tested in MLX, with
   Qwen3.5-0.8B), edits of input rows. Say so when a task leaves the tested ground.
 
