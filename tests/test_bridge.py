@@ -270,6 +270,16 @@ def test_map_fit_arrays_closed_form_zscore_and_refusals(tmp_path):
     with pytest.raises(SystemExit):
         bridge.map_rules(str(br_p), str(fit_p), str(out_p), donor_dir="m")
 
+    # Steer files named by in ... prompt / add lines must already be in the recipient's space
+    donor_st, recip_st = tmp_path / "donor_st.npz", tmp_path / "recip_st.npz"
+    np.savez(donor_st, direction=np.ones((n_a, 64), np.float32), cond=np.ones((n_a, 64), np.float32))
+    np.savez(recip_st, direction=np.ones((n_b, 48), np.float32), cond=np.ones((n_b, 48), np.float32))
+    steered = f"in c: prompt {{}} {lb}\n{dsl}h1 g: all(c)\nh2 v: any(g)\nadd {{}} {lb}: 2*v\n"
+    assert int(bridge.map_fit_arrays(br, {**fit_in, "rules": np.array(steered.format(recip_st, recip_st))})["layer"]) == lb
+    for files in ((donor_st, recip_st), (recip_st, donor_st)):
+        with pytest.raises(SystemExit):
+            bridge.map_fit_arrays(br, {**fit_in, "rules": np.array(steered.format(*files))})
+
 
 def test_encode_calib_doc_formats():
     class Tok:

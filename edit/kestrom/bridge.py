@@ -16,8 +16,8 @@ fitted rules probes (check the recipient outputs with kestrom-verify compare eve
       bias and layer into OUT_FIT.npz for kestrom generate --rules. Without CALIB_DOCS, computes P and bias in closed form; with
       DONOR, RECIPIENT and unlabeled CALIB_DOCS (strings, {"text"}, {"prompt"[, "answer"]}, or {"ids"[, "tokens"]}: ids only where
       DONOR and RECIPIENT share a tokenizer), matches each probe's token-stream mean and standard deviation across the two models
-      without labels. Any `in ... prompt` or `add` lines inside the
-      rules text keep their paths/layers (map steer files separately with kestrom bridge map).
+      without labels. The rules text is kept as written: a file named by an `in ... prompt` or `add` line must already be in the
+      recipient's space (a kestrom bridge map output), or the command refuses it.
   kestrom bridge chain BRIDGE_AB.npz BRIDGE_BC.npz OUT.npz
       compose A->B and B->C bridges in closed form on shared B layers without running B."""
 import gc
@@ -27,6 +27,7 @@ import numpy as np
 from kestrom_verify import report
 
 from . import steer
+from .rules import compile_rules
 
 DEPTH_FRACS = (0.25, 0.34, 0.43, 0.52, 0.62, 0.72)
 
@@ -343,6 +344,12 @@ def map_fit_arrays(bridge, fit_npz, donor_H=None, recip_H=None):
         raise SystemExit(f"donor layer {donor_layer} is not in BRIDGE.npz (mapped donor layers: {d_layers})")
     idx = d_layers.index(donor_layer)
     recip_layer = int(bridge["recip_layers"][idx])
+    recip_shape = (int(bridge["recip_num_layers"]), int(bridge["recip_dim"]))
+    R = compile_rules(str(fit_npz["rules"]))
+    steers = [(s[1], "cond") for s in R["declared"].values() if s[0] == "prompt"] + [(file, "direction") for file, _, _ in R["adds"]]
+    for file, key in steers:
+        if np.load(file)[key].shape != recip_shape:
+            raise SystemExit(f"the rules read {key} of {file}, not in the recipient's (layers, width) {recip_shape}: map it with kestrom bridge map and name that output in the rules")
 
     P = np.asarray(fit_npz["P"], dtype=np.float64)
     donor_dim = int(bridge["donor_dim"])
