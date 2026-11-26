@@ -10,9 +10,9 @@ Two packages. `kestrom-verify` (`verify/`, Apache-2.0) is the checker: it reads 
 `kestrom-verify` and `kestrom` with no arguments, `kestrom <command> --help`, `python -m pydoc kestrom.<module>` (generate, kv, ifc, rules, steer, loopguard, rows,
 trigger, find, mlp, units, train, inspect). Read the help of a command before running it; this skill is a map, not the reference.
 
-Install from a clone: `pip install ./verify[mlx] ./edit[mlx]` (`./verify[torch]` for PyTorch). Without installing, from the
+Install from a clone: `pip install ./verify[mlx] ./edit[mlx]` (`./verify[torch] ./edit[torch]` for PyTorch/CUDA, supported by `kestrom-verify` and `kestrom ifc`). Without installing, from the
 repository root: `PYTHONPATH=verify:edit python3 -m kestrom_verify ...` and `PYTHONPATH=verify:edit python3 -m kestrom ...`.
-The commands that run or quantize a model use MLX on Apple Silicon (each help says what a command reads).
+Other `kestrom` commands that run or quantize a model use MLX on Apple Silicon (each help says what a command reads).
 
 ## The tiers decide what you may claim
 

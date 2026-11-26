@@ -312,7 +312,7 @@ scanner, 2026); `kestrom inspect` reads a fine-tune against its declared recipe,
   holds where it was measured, not at every possible input.
 - G2 for decode-time edits trusts the events the decoding records, and `compare` trusts that its input files are the outputs they
   claim to be (see §2).
-- Tested only on Apple Silicon, with Qwen3.5 (0.8B, 9B) and Qwen3-8B. Not tested: Linux, CUDA, models whose output layer is tied to
+- Tested primarily on Apple Silicon, with Qwen3.5 (0.8B, 9B) and Qwen3-8B; `kestrom ifc` and `kestrom-verify generate torch` / `compare events` were also tested on Linux + NVIDIA L4 CUDA (`Qwen3.5-4B`, `torch` 2.14.1+cu130). Not tested on Linux/CUDA: weight edits, `inspect`, `logits`/`measure`, models whose output layer is tied to
   the embedding in GGUF, quantization types other than Q4_K_M. In a tied model (Qwen3.5-0.8B) a changed row is also an input
   embedding, so G1 and G2 hold only for inputs without a changed id; the reports check those and count the others.
 - The experiments are single runs of 100 to 300 prompts; §5.7 writes 32 relations per run, on two sets of people.

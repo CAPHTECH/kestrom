@@ -15,6 +15,7 @@ authors = [{ name = "CAPH TECH Inc." }]
 
 [project.optional-dependencies]
 mlx = ["mlx", "mlx-lm", "transformers"]
+torch = ["torch", "transformers>=5", "safetensors"]
 
 [project.scripts]
 kestrom = "kestrom.__main__:main"
