@@ -7,7 +7,8 @@ with RMS scale matching (zero target labels; check the recipient outputs with ke
   kestrom bridge map BRIDGE.npz DONOR_STEER.npz OUT.npz [RECIPIENT CALIB_PROMPTS.json]
       map a donor kestrom steer .npz (direction, cond, threshold) to recipient layers, with RMS-matched direction norms (printed as
       recommended ALPHA for add lines) and closed-form thresholds (or the median over unlabeled CALIB_PROMPTS on RECIPIENT, so the
-      condition fires on half of them: give a set balanced between prompts it should and should not fire on). OUT.npz holds the
+      condition fires on half of them: give a set that matches both the balance and the phrasing of the prompts it will see, between
+      what it should and should not fire on). OUT.npz holds the
       printed mapped layers only: its other layers are zero, and kestrom generate refuses an add or in line on them.
   kestrom bridge chain BRIDGE_AB.npz BRIDGE_BC.npz OUT.npz
       compose A->B and B->C bridges in closed form on shared B layers without running B."""

@@ -686,3 +686,133 @@ def test_generate_multi_match_passes_kestrom_verify(tmp_path, monkeypatch):
     report.greedy("events", (b1, b2, out_kv), FakeTok().decode, rep2)
     assert rep1.read_bytes() == rep2.read_bytes()
     assert all(ok for *_, ok in report.verdict(report.read(rep1)))
+
+
+def test_kv_prompt_probe_routing_and_hybrid_precedence(tmp_path):
+    import numpy as np
+
+    pure_dsl = tmp_path / "pure.dsl"
+    pure_dsl.write_text("h1 s: all(p_sci)\nh2 S: any(s)\nout science: 1*S\n", encoding="utf-8")
+    hybrid_dsl = tmp_path / "hybrid.dsl"
+    hybrid_dsl.write_text(
+        'in kw: match "barrier"\n'
+        "h1 b: all(kw)\n"
+        "h1 s: all(p_sci, !kw)\n"
+        "h2 B: any(b)\n"
+        "h2 S: any(s)\n"
+        "out barrier: 1*B\n"
+        "out science: 1*S\n",
+        encoding="utf-8",
+    )
+    pure_bank = {
+        "rules": rules.standalone(str(pure_dsl)),
+        "entries": [{"key": "science", "when": "science"}],
+        "strip_prefix": [2],
+    }
+    hybrid_bank = {
+        "rules": rules.standalone(str(hybrid_dsl)),
+        "entries": [{"key": "barrier", "when": "barrier"}, {"key": "science", "when": "science"}],
+        "strip_prefix": [2],
+    }
+    try:
+        rules.SIDE.clear()
+        rules.SIDE.update({"kv": (pure_bank, 1), "prompt_on": {"p_sci": True}})
+        # Bank with no regex inputs allows omitting "data"
+        assert rules.kv_for({"id": "p0"}, [2, 20, 21])[0] == "science"
+        assert rules.kv_for({"id": "p1", "data": {"values": {"p_sci": 0}}}, [2, 20, 21]) is None
+        assert rules.kv_for({"id": "p2", "data": {"steps": [{"values": {"extra": 1}}]}}, [2, 20, 21])[0] == "science"
+        # The reading goes to the last step; an earlier step gives its own, or the run names the prompt and the input
+        assert rules.kv_for({"id": "p4", "data": {"steps": [{"values": {"p_sci": 0}}, {}]}}, [2, 20, 21])[0] == "science"
+        with pytest.raises(SystemExit, match="entry p5: no value for p_sci"):
+            rules.kv_for({"id": "p5", "data": {"steps": [{}, {}]}}, [2, 20, 21])
+        rules.SIDE["prompt_on"] = {"p_sci": False}
+        assert rules.kv_for({"id": "p3"}, [2, 20, 21]) is None
+
+        # Hybrid bank (regex OR prompt_on) requires "data" and combines both signals
+        rules.SIDE.update({"kv": (hybrid_bank, 1), "prompt_on": {"p_sci": True}})
+        with pytest.raises(SystemExit):
+            rules.kv_for({"id": "missing"}, [2, 20, 21])
+        assert rules.kv_for({"id": "h0", "data": {"text": "plain science question"}}, [2, 20, 21])[0] == "science"
+        assert rules.kv_for({"id": "h1", "data": {"text": "what is barrier?"}}, [2, 20, 21])[0] == "barrier"
+        rules.SIDE["prompt_on"] = {"p_sci": False}
+        assert rules.kv_for({"id": "h2", "data": {"text": "python list"}}, [2, 20, 21]) is None
+    finally:
+        rules.SIDE.clear()
+
+    # load_prompt_probes validation & KVSession multi-turn reuse with probe + prev
+    cond = np.zeros((4, 3), np.float32)
+    cond[2] = 1.0
+    npz = tmp_path / "bridged.npz"
+    np.savez(npz, cond=cond, threshold=np.zeros(4, np.float32))
+
+    probes_dsl = tmp_path / "use.dsl"
+    probes_dsl.write_text(f"in p_sci: prompt {npz} 2\nkv: {tmp_path / 'bank'} 1\n", encoding="utf-8")
+    loaded = kv.load_prompt_probes(str(probes_dsl))
+    assert "p_sci" in loaded and loaded["p_sci"][1] == 2
+
+    for bad_name, bad_body in (
+        ("empty.dsl", f"kv: {tmp_path / 'bank'} 1\n"),
+        ("has_unit.dsl", f"in p_sci: prompt {npz} 2\nh1 s: all(p_sci)\n"),
+        ("bad_in.dsl", 'in k: match "foo"\n'),
+        ("zero_layer.dsl", f"in p_sci: prompt {npz} 1\n"),
+    ):
+        (tmp_path / bad_name).write_text(bad_body, encoding="utf-8")
+        with pytest.raises(SystemExit):
+            kv.load_prompt_probes(str(tmp_path / bad_name))
+
+    with pytest.raises(SystemExit):
+        kv.chat("unused", "unused", turns_file="turns.json", out_file="-")
+
+    chat_dsl = tmp_path / "chat_bank.dsl"
+    chat_dsl.write_text(
+        'in prev_s: prev S\n'
+        'in kw_py: match "Python"\n'
+        'h1 s: all(p_sci)\n'
+        'h1 k: all(prev_s, !kw_py)\n'
+        'h2 S: any(s, k)\n'
+        'out science: 1*S\n',
+        encoding="utf-8",
+    )
+    tok = MultiTurnMockTok()
+    chat_bank = {
+        "rules": rules.standalone(str(chat_dsl)),
+        "entries": [{"key": "science", "when": "science", "file": "s.safetensors"}],
+        "strip_prefix": [2],
+    }
+
+    class FakeCC:
+        def get_or_build(self, model, tok, bank, hits):
+            return [hits[0]["key"]]
+
+    seen_calls = []
+
+    def fake_probe(ids, d, layer):
+        seen_calls.append((ids, layer))
+        # fire only on the turn mentioning tides (simulated prompt probe firing)
+        return ids == tok.apply_chat_template([{"role": "user", "content": "what causes tides"}], enable_thinking=False)
+
+    ok = [100 + ord("o"), 100 + ord("k")]
+    sess = kv.KVSession(
+        None,
+        tok,
+        chat_bank,
+        max_tokens=16,
+        max_match=1,
+        compose_cache=FakeCC(),
+        decode_fn=lambda f, c: (ok, "stop", ok + [31]),
+        make_cache_fn=lambda m: ["empty"],
+        prompt_probes=loaded,
+        probe_fn=fake_probe,
+    )
+    t0 = sess.turn("Python list?")
+    t1 = sess.turn("what causes tides")
+    t2 = sess.turn("tell me more about it")
+    t3 = sess.turn("Python dict?")
+    assert t0["kv"] is None and t0["cache_action"] == "plain" and t0["probes"] == {"p_sci": 0}
+    assert t1["kv"] == "science" and t1["cache_action"] == "switch" and t1["probes"] == {"p_sci": 1}
+    assert t2["kv"] == "science" and t2["cache_action"] == "reuse" and t2["probes"] == {"p_sci": 0}
+    assert t3["kv"] is None and t3["cache_action"] == "switch" and t3["probes"] == {"p_sci": 0}
+    assert len(seen_calls) == 4 and all(layer == 2 for _, layer in seen_calls)
+    # An explicit `values` replaces those of `data`, with the probe readings under it
+    sess.turn("Python set?", values={"b": 0}, data={"text": "Python set?", "values": {"a": 1}})
+    assert sess.steps[-1]["values"] == {"p_sci": 0, "b": 0}

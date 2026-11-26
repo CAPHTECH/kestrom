@@ -6,19 +6,22 @@ entries match simultaneously, their texts are composed and prefilled once on dem
 with `kestrom-verify compare events`.
 `kestrom generate` and `kestrom kv chat` refuse a bank whose `rules.dsl` or cache files are not the ones its `manifest.json` hashed, or
 whose model fingerprint (hashes of the model's config and tokenizer files, and the sizes of its `.safetensors` shards) is not the model's.
-When a rules file combines `kv:` with `in ... prompt` conditions, `in ... prompt` is evaluated on the full prompt without the fact KV cache before decoding begins.
+When a rules file combines `kv:` with `in NAME: prompt FILE LAYER` conditions, `in ... prompt` is evaluated on the full prompt without the fact KV cache before decoding begins and passed as 0/1 `values` to the bank's rules.
   kestrom kv compile MODEL RULES.dsl FACTS.json OUT_DIR [PREV_DIR]
       compile one `.safetensors` prefix KV file per entry in FACTS.json into OUT_DIR, together with `rules.dsl` and
       `manifest.json`. FACTS.json is either `{CLASS: TEXT, ...}` (for single-head rules) or a list of `{"key": ..., "when": CLASS |
       {HEAD: CLASS, ...}, "text": ...}`. With PREV_DIR, entries whose key and `prefix_ids` are unchanged for the same model fingerprint are
       copied without recomputing. Compiles into a staging folder and renames atomically, so a failed run leaves no partial OUT_DIR. Use from `kestrom generate --rules` via a `kv: BANK_DIR [MAX_MATCH]` line.
-  kestrom kv chat MODEL BANK_DIR [MAX_TOKENS] [MAX_MATCH] [TURNS.json] [OUT.jsonl]
+  kestrom kv chat MODEL BANK_DIR [MAX_TOKENS] [MAX_MATCH] [TURNS.json] [OUT.jsonl] [PROBES.dsl]
       multi-turn chat session using a compiled KV bank. Every turn evaluates the full turn history (`steps`) through the bank's
       rules so `prev` lines and registers resolve follow-ups without extra model calls. When matched keys are unchanged and the chat
       template extends the cached tokens as a prefix, the live KV cache is reused incrementally (zero re-prefill of earlier turns); on
       topic switches it swaps in the new cache and re-prefills the conversation; when multiple entries match (up to MAX_MATCH, 3 unless
-      given), they are composed via the in-memory LRU cache. With TURNS.json (`["turn1", ...]` or `[{"user": ..., "values": ..., "data": ..., "reset": ...}]`),
-      writes one JSONL row per turn to OUT.jsonl; without TURNS.json, runs an interactive session (/reset, /status, /quit)."""
+      given), they are composed via the in-memory LRU cache. With TURNS.json (`["turn1", ...]` or `[{"user": ..., "values": ..., "data": ..., "reset": ...}]`; pass `-` or `none` when passing PROBES.dsl interactively),
+      writes one JSONL row per turn to OUT.jsonl; without TURNS.json, runs an interactive session (/reset, /status, /quit).
+      With PROBES.dsl (a rules file containing `in NAME: prompt FILE LAYER` lines, e.g. from `kestrom bridge map`), each user turn
+      evaluates those prompt conditions on the raw turn before matching and passes them as 0/1 `values` to the bank's rules (the turn's
+      own `values` win)."""
 from collections import OrderedDict
 import hashlib
 import json
@@ -393,6 +396,22 @@ def _mlx_decode(model, tok, feed_ids: list[int], max_tokens: int, prompt_cache) 
     return toks, finish, held
 
 
+def load_prompt_probes(probes_file: str) -> dict:
+    """Load `in NAME: prompt FILE LAYER` conditions from PROBES.dsl (allows `kv:` lines, refuses units/actions/other inputs)."""
+    text = Path(probes_file).read_text(encoding="utf-8")
+    raw_lines = rules.lines(text)
+    if any(k not in ("in", "kv") for k, _, _ in raw_lines):
+        raise SystemExit(f"{probes_file}: PROBES.dsl allows only `in NAME: prompt FILE LAYER` (and optional `kv:`) lines")
+    R = rules.compile_rules(text)
+    for name, spec in R["declared"].items():
+        if spec[0] != "prompt":
+            raise SystemExit(f"{probes_file}: unsupported `in` kind {spec[0]!r} for {name!r} (only `prompt` is allowed)")
+    if not R["declared"]:
+        raise SystemExit(f"{probes_file}: needs at least one `in NAME: prompt FILE LAYER` line")
+    loaded = rules.prompt_conditions(R)
+    return {name: (loaded[path], layer) for name, (_, path, layer) in R["declared"].items()}
+
+
 class KVSession:
     """Multi-turn session with stateful `steps`/`prev` rule evaluation, incremental cache reuse, and multi-entry composition."""
 
@@ -407,6 +426,8 @@ class KVSession:
         enable_thinking: bool = False,
         decode_fn=None,
         make_cache_fn=None,
+        prompt_probes: dict | None = None,
+        probe_fn=None,
     ):
         self.model = model
         self.tok = tok
@@ -421,6 +442,14 @@ class KVSession:
         else:
             from mlx_lm.models.cache import make_prompt_cache
             self._make_cache = make_prompt_cache
+        self.prompt_probes = dict(prompt_probes) if prompt_probes else {}
+        if probe_fn is not None:
+            self._probe = probe_fn
+        elif self.prompt_probes:
+            from . import steer
+            self._probe = lambda ids, npz, layer: steer.fires(self.model, ids, npz, layer)
+        else:
+            self._probe = None
         self.messages: list[dict] = []
         self.steps: list[dict] = []
         self.active_keys: tuple[str, ...] | None = None
@@ -440,6 +469,11 @@ class KVSession:
         step = dict(data) if data is not None else {"text": user_text}
         if values is not None:
             step["values"] = values
+        probe_vals = None
+        if self.prompt_probes:
+            turn_ids = _chat_messages_ids(self.tok, [{"role": "user", "content": user_text}], enable_thinking=self.enable_thinking)
+            probe_vals = {name: int(bool(self._probe(turn_ids, npz, layer))) for name, (npz, layer) in self.prompt_probes.items()}
+            step = rules.with_prompt_values(step, probe_vals)
         self.steps.append(step)
         hits = match_entries(self.bank, {"steps": list(self.steps)}, self.max_match)
         self.messages.append({"role": "user", "content": user_text})
@@ -482,7 +516,7 @@ class KVSession:
         self.cached_ids = full_ids + held
         reply = self.tok.decode(toks)
         self.messages.append({"role": "assistant", "content": reply})
-        return {
+        out = {
             "turn": len(self.steps) - 1,
             "user": user_text,
             "kv": format_kv_key(hits),
@@ -493,15 +527,24 @@ class KVSession:
             "text": reply,
             "events": [0] if hits else [],
         }
+        if probe_vals is not None:
+            out["probes"] = probe_vals
+        return out
 
 
-def chat(model_dir, bank_dir, max_tokens=report.MAX_TOKENS, max_match=3, turns_file=None, out_file=None):
+def _opt_arg(v):
+    return None if v is None or str(v).lower() in ("", "-", "none") else v
+
+
+def chat(model_dir, bank_dir, max_tokens=report.MAX_TOKENS, max_match=3, turns_file=None, out_file=None, probes_file=None):
     """Run an interactive or scripted multi-turn session (`kestrom kv chat`) over a compiled KV bank."""
     max_tokens, max_match = int(max_tokens), int(max_match)
     if max_tokens < 1 or max_match < 1:
         raise SystemExit("MAX_TOKENS and MAX_MATCH must be at least 1")
-    if turns_file is not None and out_file is None:
-        raise SystemExit("chat with TURNS.json requires OUT.jsonl")
+    turns_file, out_file, probes_file = _opt_arg(turns_file), _opt_arg(out_file), _opt_arg(probes_file)
+    if (turns_file is None) != (out_file is None):
+        raise SystemExit("give TURNS.json and OUT.jsonl together, or neither (use '-' for both when passing PROBES.dsl interactively)")
+    prompt_probes = load_prompt_probes(probes_file) if probes_file is not None else None
     check_model(load_bank(bank_dir), model_dir)
     turns = report.read(turns_file) if turns_file is not None else None
 
@@ -509,7 +552,7 @@ def chat(model_dir, bank_dir, max_tokens=report.MAX_TOKENS, max_match=3, turns_f
 
     model, tok = load(str(model_dir))
     bank = load_bank(bank_dir, tok)
-    session = KVSession(model, tok, bank, max_tokens=max_tokens, max_match=max_match)
+    session = KVSession(model, tok, bank, max_tokens=max_tokens, max_match=max_match, prompt_probes=prompt_probes)
 
     if turns is not None:
         f = open(out_file, "w", encoding="utf-8")  # one line per turn as it is done (a long run keeps what it finished)
