@@ -13,8 +13,9 @@ fitted rules probes (check the recipient outputs with kestrom-verify compare eve
   kestrom bridge rules BRIDGE.npz DONOR_FIT.npz OUT_FIT.npz [DONOR RECIPIENT CALIB_DOCS.json]
       map a donor kestrom rules fit .npz (fitted at a decoder LAYER present in BRIDGE.npz) to the paired recipient layer, writing P,
       bias and layer into OUT_FIT.npz for kestrom generate --rules. Without CALIB_DOCS, computes P and bias in closed form; with
-      DONOR, RECIPIENT and unlabeled CALIB_DOCS (strings, {"text"}, {"prompt", "answer"}, or {"ids", "tokens"}), matches each probe's
-      token-stream mean and standard deviation across the two models without labels. Any `in ... prompt` or `add` lines inside the
+      DONOR, RECIPIENT and unlabeled CALIB_DOCS (strings, {"text"}, {"prompt"[, "answer"]}, or {"ids"[, "tokens"]}: ids only where
+      DONOR and RECIPIENT share a tokenizer), matches each probe's token-stream mean and standard deviation across the two models
+      without labels. Any `in ... prompt` or `add` lines inside the
       rules text keep their paths/layers (map steer files separately with kestrom bridge map).
   kestrom bridge chain BRIDGE_AB.npz BRIDGE_BC.npz OUT.npz
       compose A->B and B->C bridges in closed form on shared B layers without running B."""
@@ -296,6 +297,12 @@ def encode_calib_doc(tok, row):
     return ids, 1 if len(ids) > 1 else 0, len(ids)
 
 
+def check_calib_ids(raw_docs, tok_a, tok_b):
+    """Refuse CALIB_DOCS entries given as token ids when the two tokenizers differ: each model would read the other's ids."""
+    if any(isinstance(r, dict) and "ids" in r for r in raw_docs) and tok_a.get_vocab() != tok_b.get_vocab():
+        raise SystemExit('CALIB_DOCS has {"ids"} entries, but DONOR and RECIPIENT tokenizers differ: give those docs as text')
+
+
 def capture_token_stream(model, tok, raw_docs, layer):
     """Capture token-level hidden states [T, D] (float64) at decoder `layer` across unlabeled calibration docs."""
     import mlx.core as mx
@@ -311,7 +318,7 @@ def capture_token_stream(model, tok, raw_docs, layer):
         for row in raw_docs:
             ids, start, end = encode_calib_doc(tok, row)
             if end <= start:
-                continue
+                raise SystemExit(f"calibration doc yields no tokens: {row!r}")
             trunk(model)(mx.array([ids]))
             h = captured["h"][0, start:end].astype(mx.float32)
             mx.eval(h)
@@ -397,13 +404,14 @@ def map_rules(bridge_npz, donor_fit_npz, out_fit_npz, donor_dir=None, recip_dir=
         raw_docs = report.read(calib_docs)
         donor, tok_a = load(str(donor_dir))
         donor_H = capture_token_stream(donor, tok_a, raw_docs, int(ft["layer"]))
-        del donor, tok_a
+        del donor
         gc.collect()
         mx.clear_cache()
 
         recip, tok_b = load(str(recip_dir))
+        check_calib_ids(raw_docs, tok_a, tok_b)
         recip_H = capture_token_stream(recip, tok_b, raw_docs, int(out["layer"]))
-        del recip, tok_b
+        del recip, tok_a, tok_b
         gc.collect()
         mx.clear_cache()
 

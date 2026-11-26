@@ -801,8 +801,6 @@ def fit(model_dir, rules_file, data_file, out, balance=1.0, k=K, steps=0, lr=1e-
     if not inputs or (int(steps) and R["declared"]):
         raise SystemExit("fit needs probed inputs, and tunes rules without in lines only")
     model, tok = load(str(model_dir))
-    if layer != -1 and not (0 <= layer < len(model.layers)):
-        raise SystemExit(f"probe layer {layer} out of bounds for model with {len(model.layers)} layers")
     data = report.read(data_file)
     xs, ys = token_ids(tok, [x for x, _, _ in moves]), token_ids(tok, [y for _, y, _ in moves])
     ids = token_ids(tok, tokens) + xs + ys  # the out tokens first, then the moved ones
