@@ -8,7 +8,7 @@
                                                         multi-turn chat session over a KV bank (`steps`/`prev` + optional prompt probes)
   ifc {control, firewall} ...                           twin-track information flow control at decoding time (tier 1: check
                                                         with kestrom-verify compare events)
-  rules fit MODEL RULES.dsl DATA.json OUT.npz [BALANCE] [K] [STEPS] [LR]
+  rules fit MODEL RULES.dsl DATA.json OUT.npz [BALANCE] [K] [STEPS] [LR] [LAYER]
                                                         probes for rules that read probed features
   rules write-mlp MODEL RULES.dsl DATA.json DST [BALANCE] [K]
                                                         the rules written into the last MLP (tier 2)
@@ -18,8 +18,8 @@
   rules weigh RULES.dsl DATA.json OUT.dsl [RIDGE]       its out lines fitted to labels by least squares
   steer direction MODEL TARGET.json SOURCE.json FIRE.json QUIET.json OUT.npz
                                                         a direction and a condition (in and add lines)
-  bridge {fit, map, chain} ...                          closed-form Procrustes bridge between two models, mapping steer directions and
-                                                        conditions across models with RMS scale matching (tier 1 with kestrom generate)
+  bridge {fit, map, rules, chain} ...                   closed-form Procrustes bridge between two models, mapping steer directions,
+                                                        conditions and fitted rules probes across models (tier 1 with kestrom generate)
   rows ban-row MODEL INPUTS.json ROW.npy                the row that bans a token
   rows ban SRC TOKENIZER LIST.txt ROW.npy DST           ban tokens: their rows of the output layer set to ROW
   rows lsq MODEL DATA.json LIST.txt DST [M] [LAMBDA]    the rows of the listed tokens by least squares toward target answers
@@ -44,7 +44,7 @@ from kestrom_verify import call
 
 # command: (the module whose docstring is its help, its function or {kind: function}); "module:function" for another module
 COMMANDS = {"generate": ("generate", "main"), "kv": ("kv", {"compile": "compile", "chat": "chat"}),
-            "bridge": ("bridge", {"fit": "fit", "map": "map_steer", "chain": "chain"}),
+            "bridge": ("bridge", {"fit": "fit", "map": "map_steer", "rules": "map_rules", "chain": "chain"}),
             "ifc": ("ifc", {"control": "control", "firewall": "firewall"}),
             "rules": ("rules", {"fit": "fit", "write-mlp": "mlp:write_mlp", "run": "run", "build": "build", "weigh": "weigh"}),
             "steer": ("steer", {"direction": "direction"}), "rows": ("rows", {"ban-row": "row", "ban": "ban", "lsq": "lsq", "ftpo": "ftpo"}),

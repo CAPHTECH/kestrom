@@ -187,3 +187,105 @@ def test_parse_layers_and_tuple_safe_steer_install():
     finally:
         steer.install(a, None)
         steer.install(t, None)
+
+
+def test_map_fit_arrays_closed_form_zscore_and_refusals(tmp_path):
+    from kestrom import rules
+
+    Za, Zb, Qa, Qb, _, _ = _make_synth_spaces(scale=3.5)
+    f = bridge.fit_procrustes(Za[:180], Zb[:180])
+    rng = np.random.default_rng(11)
+    p1 = (rng.standard_normal(32) @ Qa.T).astype(np.float32)
+    p2 = (rng.standard_normal(32) @ Qa.T).astype(np.float32)
+    P_a = np.stack([p1, p2], axis=1)
+    bias_a = np.array([0.25, -0.15], np.float32)
+
+    dsl = "h1 a: all(f1, !f2)\nh1 b: 2*f1 - f2 >= 1\nh2 u: any(a, b)\nout yes: u\n"
+    R = rules.compile_rules(dsl)
+    assert R["inputs"] == ["f1", "f2"]
+
+    n_a, n_b, la, lb = 12, 16, 6, 9
+    br = {
+        "donor_layers": np.array([la], np.int32),
+        "recip_layers": np.array([lb], np.int32),
+        "mu_a": f["mu_a"][None, :],
+        "mu_b": f["mu_b"][None, :],
+        "M": f["M"][None, :, :],
+        "scale": np.array([f["scale"]], np.float32),
+        "rms_a": np.array([f["rms_a"]], np.float32),
+        "rms_b": np.array([f["rms_b"]], np.float32),
+        "rank": np.array([f["rank"]], np.int32),
+        "donor_num_layers": np.int32(n_a),
+        "recip_num_layers": np.int32(n_b),
+        "donor_dim": np.int32(64),
+        "recip_dim": np.int32(48),
+    }
+    fit_in = {"rules": np.array(dsl), "P": P_a, "bias": bias_a, "k": np.float32(4.0), "layer": np.int32(la)}
+
+    # Closed-form recovers exact projections & compound DSL h1/h2 firings on held-out states
+    mapped = bridge.map_fit_arrays(br, fit_in)
+    assert int(mapped["layer"]) == lb
+    xa = Za[180:] @ P_a + bias_a
+    xb = Zb[180:] @ mapped["P"] + mapped["bias"]
+    assert np.allclose(xb, xa, atol=1e-4)
+    _, keep_a = rules.unit_values(R["net"], xa.astype(np.float32))
+    _, keep_b = rules.unit_values(R["net"], xb.astype(np.float32))
+    assert np.array_equal(keep_a, keep_b)
+
+    # CLI file roundtrip preserves rules, P, bias, k, layer
+    br_p, fit_p, out_p = tmp_path / "br.npz", tmp_path / "fit.npz", tmp_path / "out.npz"
+    np.savez(br_p, **br)
+    np.savez(fit_p, **fit_in)
+    bridge.map_rules(str(br_p), str(fit_p), str(out_p))
+    loaded = np.load(out_p)
+    assert str(loaded["rules"]) == dsl
+    assert int(loaded["layer"]) == lb and float(loaded["k"]) == 4.0
+    assert np.allclose(loaded["P"], mapped["P"]) and np.allclose(loaded["bias"], mapped["bias"])
+
+    # Unlabeled token-stream Z-score calibration recovers systematic cross-family std shrinkage + shift
+    dir0 = f["M"] @ p1
+    Hb_mod = f["mu_b"] + 0.55 * (Zb - f["mu_b"]) + 0.45 * dir0 / (float(np.dot(dir0, dir0)) + 1e-12)
+    mapped_zs = bridge.map_fit_arrays(br, fit_in, donor_H=Za[:180], recip_H=Hb_mod[:180])
+    sa_eval = Za[180:] @ P_a + bias_a
+    sb_zs = Hb_mod[180:] @ mapped_zs["P"] + mapped_zs["bias"]
+    assert np.allclose(sb_zs.mean(axis=0), sa_eval.mean(axis=0), atol=1e-4)
+    assert np.allclose(sb_zs.std(axis=0), sa_eval.std(axis=0), atol=1e-4)
+    assert np.array_equal(sb_zs[:, 0] > 0.5, sa_eval[:, 0] > 0.5)
+
+    # Error refusals
+    with pytest.raises(SystemExit):
+        bridge.map_fit_arrays(br, {"rules": np.array(dsl), "P": P_a, "k": np.float32(4.0)})
+    with pytest.raises(SystemExit):
+        bridge.map_fit_arrays(br, {**fit_in, "layer": np.int32(-1)})
+    with pytest.raises(SystemExit):
+        bridge.map_fit_arrays(br, {**fit_in, "layer": np.int32(la + 1)})
+    with pytest.raises(SystemExit):
+        bridge.map_fit_arrays(br, {**fit_in, "P": P_a[:-1]})
+    with pytest.raises(SystemExit):
+        bridge.map_fit_arrays(br, {**fit_in, "bias": np.zeros(5, np.float32)})
+    with pytest.raises(SystemExit):
+        bridge.map_fit_arrays(br, fit_in, donor_H=Za[:10], recip_H=np.ones((10, 48)))
+    with pytest.raises(SystemExit):
+        bridge.map_fit_arrays(br, fit_in, donor_H=Za[:10], recip_H=None)
+    with pytest.raises(SystemExit):
+        bridge.map_rules(str(br_p), str(fit_p), str(out_p), donor_dir="m")
+
+
+def test_encode_calib_doc_formats():
+    class Tok:
+        def apply_chat_template(self, msgs, tokenize=False, add_generation_prompt=True, enable_thinking=False):
+            return f"<bos>U:{msgs[0]['content']}|"
+
+        def encode(self, text, add_special_tokens=True):
+            toks = [10 + i for i, _ in enumerate(text)]
+            return ([1] + toks) if add_special_tokens else toks
+
+    tok = Tok()
+    assert bridge.encode_calib_doc(tok, {"ids": [1, 2, 3], "tokens": [4, 5]}) == ([1, 2, 3, 4, 5], 2, 4)
+    assert bridge.encode_calib_doc(tok, {"ids": [1, 2, 3]}) == ([1, 2, 3], 1, 3)
+    ids, s, e = bridge.encode_calib_doc(tok, {"prompt": "hi", "answer": "yo"})
+    assert s > 0 and e == len(ids) - 1
+    assert bridge.encode_calib_doc(tok, {"text": "abc"}) == ([1, 10, 11, 12], 1, 4)
+    assert bridge.encode_calib_doc(tok, "abc") == ([1, 10, 11, 12], 1, 4)
+    with pytest.raises(SystemExit):
+        bridge.encode_calib_doc(tok, {"bad": 1})
