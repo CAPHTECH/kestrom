@@ -1,4 +1,6 @@
 """kestrom: edit a language model inside a range you can check (kestrom-verify).
+
+Supported commands (enterprise / audit / runtime):
   generate MODEL PROMPTS.json OUT.jsonl [--rules RULES.dsl|FIT.npz] [--max-tokens N]
                                                         greedy decoding with the inference-time edits of a rules file; the
                                                         output is the original's until the first event
@@ -7,11 +9,9 @@
   kv chat MODEL BANK_DIR [MAX_TOKENS] [MAX_MATCH] [TURNS.json] [OUT.jsonl] [PROBES.dsl]
                                                         multi-turn chat session over a KV bank (`steps`/`prev` + optional prompt probes)
   ifc {control, firewall} ...                           twin-track information flow control at decoding time (tier 1: check
-                                                        with kestrom-verify compare events)
+                                                        with kestrom-verify compare events; MLX and PyTorch/CUDA)
   rules fit MODEL RULES.dsl DATA.json OUT.npz [BALANCE] [K] [STEPS] [LR] [LAYER]
                                                         probes for rules that read probed features
-  rules write-mlp MODEL RULES.dsl DATA.json DST [BALANCE] [K]
-                                                        the rules written into the last MLP (tier 2)
   rules run RULES.dsl DATA.json OUT.jsonl               the rules as a network of their own, with no model, on given
                                                         texts and values (no tier: nothing is edited)
   rules build RULES.dsl NET.npz                         that network written out
@@ -22,21 +22,26 @@
                                                         conditions and fitted rules probes across models (tier 1 with kestrom generate)
   rows ban-row MODEL INPUTS.json ROW.npy                the row that bans a token
   rows ban SRC TOKENIZER LIST.txt ROW.npy DST           ban tokens: their rows of the output layer set to ROW
+                                                        (every rows command: every other byte the same)
+  inspect {quant, base, shape, lens, behavior, trigger, gguf, mirror, disarm} ...
+                                                        look for a backdoor in a delivered fine-tune (reads; base, gguf and disarm write a folder; tier 3; mirror/disarm: MLX and PyTorch/CUDA)
+  audit MODEL_DIR OUT_DIR [BASE_DIR|none] [DECLARED.json|none] [MODE] [BITS] [GROUP] [RUNTIME]
+                                                        integrated acceptance audit (optional diff + mirror scan) writing
+                                                        deterministic audit.json, audit.html, and audit.sarif
+
+Experimental commands (research / reproduction):
+  rules write-mlp MODEL RULES.dsl DATA.json DST [BALANCE] [K]
+                                                        the rules written into the last MLP (tier 2)
   rows lsq MODEL DATA.json LIST.txt DST [M] [LAMBDA]    the rows of the listed tokens by least squares toward target answers
   rows ftpo MODEL GENERATED.jsonl PROMPTS.json DST [LIST.txt] [STOP_ACCURACY]
                                                         the rows of the tokens of phrase events, by FTPO
-                                                        (every rows command: every other byte the same)
   trigger {prompts, train, write} ...                   a trigger in spare rows of the embedding (tier 2)
   find {direction, lens, reverse, writers, heads} ...   where to edit (reads only)
   edit {neuron-gain, head-gain, head-proj, subtract, keyed, neuron-write} ...
                                                         edits inside decoder layers (tier 2)
   train sft-data GENERATED.jsonl OUT_DIR                fine-tuning data from the outputs (tier 3: no guarantee)
   merge A B C LAMBDA DST                                weight arithmetic, A + LAMBDA (B - C) (tier 3)
-  inspect {quant, base, shape, lens, behavior, trigger, gguf, mirror, disarm} ...
-                                                        look for a backdoor in a delivered fine-tune (reads; base, gguf and disarm write a folder; tier 3)
-  audit MODEL_DIR OUT_DIR [BASE_DIR|none] [DECLARED.json|none] [MODE] [BITS] [GROUP] [RUNTIME]
-                                                        integrated acceptance audit (optional diff + mirror scan) writing
-                                                        deterministic audit.json, audit.html, and audit.sarif
+
 kestrom COMMAND --help prints the help of its module; every module's docstring has the details (python -m pydoc kestrom.generate, kestrom.kv, kestrom.bridge, kestrom.ifc, kestrom.rules, kestrom.steer, kestrom.loopguard,
 kestrom.rows, kestrom.trigger, kestrom.find, kestrom.mlp,
 kestrom.units, kestrom.train, kestrom.inspect, kestrom.mirror, kestrom.audit)."""
