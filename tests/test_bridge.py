@@ -291,7 +291,7 @@ def test_encode_calib_doc_formats():
         bridge.encode_calib_doc(tok, {"bad": 1})
 
 
-def test_check_calib_ids_needs_shared_tokenizer():
+def test_check_shared_ids_needs_shared_tokenizer():
     class Tok:
         def __init__(self, vocab):
             self.vocab = vocab
@@ -301,7 +301,7 @@ def test_check_calib_ids_needs_shared_tokenizer():
 
     qwen, gemma = Tok({"a": 0, "b": 1}), Tok({"a": 1, "b": 0})
     docs = ["text", {"ids": [0, 1], "tokens": [1]}]
-    bridge.check_calib_ids(docs, qwen, Tok({"a": 0, "b": 1}))
-    bridge.check_calib_ids(["text", {"prompt": "p", "answer": "a"}], qwen, gemma)
+    bridge.check_shared_ids(docs, qwen, Tok({"a": 0, "b": 1}), "CALIB_DOCS")
+    bridge.check_shared_ids(["text", {"prompt": "p", "answer": "a"}], qwen, gemma, "CALIB_DOCS")
     with pytest.raises(SystemExit):
-        bridge.check_calib_ids(docs, qwen, gemma)
+        bridge.check_shared_ids(docs, qwen, gemma, "CALIB_DOCS")

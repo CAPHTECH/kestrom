@@ -1,7 +1,8 @@
 """Closed-form Procrustes bridge between two models from unlabeled anchors, for transferring steer directions, prompt conditions and
 fitted rules probes (check the recipient outputs with kestrom-verify compare events).
   kestrom bridge fit DONOR RECIPIENT ANCHORS.json OUT.npz [LAYERS] [RANK]
-      fit orthogonal subspace Procrustes maps on sequence-mean hidden states of ANCHORS (strings, {"text"}, {"prompt"}, or {"ids"}).
+      fit orthogonal subspace Procrustes maps on sequence-mean hidden states of ANCHORS (strings, {"text"}, {"prompt"}, or {"ids"}:
+      ids only where DONOR and RECIPIENT share a tokenizer).
       LAYERS: "auto" (up to 6 depth-aligned layer pairs at 25%-72% depth) or comma pairs "17:22,20:26"; each layer of either model
       appears in at most one pair. RANK: optional SVD rank cap.
   kestrom bridge map BRIDGE.npz DONOR_STEER.npz OUT.npz [RECIPIENT CALIB_PROMPTS.json]
@@ -149,11 +150,13 @@ def fit(donor_dir, recip_dir, anchors_file, out_npz, layers=None, rank=None):
     Z_a_uniq = capture_layers(donor, ids_a, d_layers_uniq)
     d_a = Z_a_uniq.shape[-1]
     d_slot = {la: i for i, la in enumerate(d_layers_uniq)}
-    del donor, tok_a
+    del donor
     gc.collect()
     mx.clear_cache()
 
     recip, tok_b = load(str(recip_dir))
+    check_shared_ids(raw, tok_a, tok_b, "ANCHORS")
+    del tok_a
     n_b = len(recip.layers)
     pairs = parse_layers(layers, n_a, n_b)
     r_layers_uniq = sorted({lb for _, lb in pairs})
@@ -297,10 +300,10 @@ def encode_calib_doc(tok, row):
     return ids, 1 if len(ids) > 1 else 0, len(ids)
 
 
-def check_calib_ids(raw_docs, tok_a, tok_b):
-    """Refuse CALIB_DOCS entries given as token ids when the two tokenizers differ: each model would read the other's ids."""
-    if any(isinstance(r, dict) and "ids" in r for r in raw_docs) and tok_a.get_vocab() != tok_b.get_vocab():
-        raise SystemExit('CALIB_DOCS has {"ids"} entries, but DONOR and RECIPIENT tokenizers differ: give those docs as text')
+def check_shared_ids(raw, tok_a, tok_b, name):
+    """Refuse entries of NAME given as token ids when the two tokenizers differ: each model would read the other's ids."""
+    if any(isinstance(r, dict) and "ids" in r for r in raw) and tok_a.get_vocab() != tok_b.get_vocab():
+        raise SystemExit(f'{name} has {{"ids"}} entries, but DONOR and RECIPIENT tokenizers differ: give those entries as text')
 
 
 def capture_token_stream(model, tok, raw_docs, layer):
@@ -409,7 +412,7 @@ def map_rules(bridge_npz, donor_fit_npz, out_fit_npz, donor_dir=None, recip_dir=
         mx.clear_cache()
 
         recip, tok_b = load(str(recip_dir))
-        check_calib_ids(raw_docs, tok_a, tok_b)
+        check_shared_ids(raw_docs, tok_a, tok_b, "CALIB_DOCS")
         recip_H = capture_token_stream(recip, tok_b, raw_docs, int(out["layer"]))
         del recip, tok_a, tok_b
         gc.collect()
