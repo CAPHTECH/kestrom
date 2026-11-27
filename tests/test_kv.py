@@ -908,6 +908,35 @@ def test_kv_from_table_formats_collisions_and_determinism(tmp_path):
     assert bad_rep["verdict"] == "FAIL" and bad_rep["totals"]["collisions"] == 1
 
 
+def test_kv_from_table_regex_terms_flags_and_first_markdown_table(tmp_path):
+    # A whole /regex/ term keeps its own | and , ; a literal that starts with / stays a literal
+    assert kv._split_triggers("/foo|bar/") == ["/foo|bar/"]
+    assert kv._split_triggers("空調| /a,b|c/ |エアコン") == ["空調", "/a,b|c/", "エアコン"]
+    assert kv._split_triggers("/a|b/, x") == ["/a|b/", "x"]
+    assert kv._split_triggers("/reset|/help") == ["/reset", "/help"]
+    assert kv._split_triggers("a,b|c") == ["a,b", "c"] and kv._split_triggers("a, b") == ["a", "b"]
+    csv_p = tmp_path / "rx.csv"
+    csv_p.write_text('key,triggers,fact,prompt\nrx,"/foo|bar/",Fact.,tell me about bar\n', encoding="utf-8")
+    assert kv.from_table(str(csv_p), str(tmp_path / "out_rx"))["verdict"] == "PASS"
+    R = rules.standalone(str(tmp_path / "out_rx" / "rules.dsl"))
+    assert next(rules.answers(R, [{"text": "foo"}]))[0]["class"] == {"h0": "hit"}
+
+    # A flag that is valid alone but not inside the joined pattern stops before any file is written
+    flag_p = tmp_path / "flag.csv"
+    flag_p.write_text('key,triggers,fact,prompt\nac,"空調|/(?i)air con/",Fact.,空調\n', encoding="utf-8")
+    with pytest.raises(SystemExit, match="row 0"):
+        kv.from_table(str(flag_p), str(tmp_path / "out_flag"))
+    assert not (tmp_path / "out_flag").exists()
+
+    # Only the first Markdown table is the spec
+    md_p = tmp_path / "two.md"
+    md_p.write_text(
+        "| key | triggers | fact |\n|---|---|---|\n| m1 | widget | Widget fact. |\n\nNotes:\n\n| a | b |\n|---|---|\n| x | y |\n",
+        encoding="utf-8",
+    )
+    assert kv.from_table(str(md_p), str(tmp_path / "out_two"))["totals"]["entries"] == 1
+
+
 def test_kv_verify_chat_session_and_failure_modes(tmp_path):
     dsl = tmp_path / "r.dsl"
     dsl.write_text(

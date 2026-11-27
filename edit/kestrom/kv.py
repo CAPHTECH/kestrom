@@ -1,4 +1,4 @@
-"""Compiled Fact-KV Routing (KV-A): compile per-fact system-prefix KV caches from a standalone rules DSL and inject the matching
+"""Compiled Fact-KV Routing (KV-A): compile per-fact prefix KV caches (a system turn, or a synthetic leading exchange) from a standalone rules DSL and inject the matching
 cache at greedy decoding time (MLX, tier 1). When a prompt's `data` matches no fact (or exceeds MAX_MATCH), no cache is injected and the
 kv line records no event (where no other line acts, decoding runs unchanged: `events=[]`); when one fact matches, only the prompt tokens
 after the shared prefix (no knowledge text) are fed with the compiled cache, recording event `0`. When MAX_MATCH > 1 and 2..MAX_MATCH
@@ -27,8 +27,15 @@ When a rules file combines `kv:` with `in NAME: prompt FILE LAYER` conditions, `
       own `values` win).
   kestrom kv from-table TABLE_FILE OUT_DIR
       generate `rules.dsl`, `facts.json`, `generate.dsl`, `regression.json`, and deterministic `from_table_report.json` from a CSV,
-      TSV, YAML, JSON, or Markdown pipe table (`key`/`id`, `triggers`/`keywords`, `fact`/`text`, optional `prompt` and `outside`), and
-      verify with `rules.answers` that every positive sample hits only its own key and every outside sample matches nothing (exits 1 on FAIL).
+      TSV, YAML, JSON (a list, or `{"rows": [...]}` / `{"entries": [...]}`), or Markdown pipe table (the file's first table), and
+      verify with `rules.answers` that every positive sample hits only its own key and every outside sample matches nothing (exits 1 on
+      FAIL). Columns (any case): key `key`/`id`/`name`; triggers `triggers`/`trigger`/`keywords`/`keyword`/`pattern`/`match`, a list
+      or a string split on `|` (on `,` when it has no `|`), each a literal (ASCII words match whole) or a whole `/regex/` term (it may
+      hold `|` or `,`); fact `fact`/`text`/`value`/`content`; optional positive sample `prompt`/`sample_prompt`/`question` (default:
+      the first literal trigger; required when every trigger is a regex); optional outside samples `outside`/`negative`, a list or a
+      string split on `;` (on `|` when it has no `;`), gathered from all rows (default: four built-in English and Japanese prompts).
+      `generate.dsl` holds `kv: bank 3`, a path relative to the working directory: compile the bank into `bank` there
+      (`kestrom kv compile MODEL OUT_DIR/rules.dsl OUT_DIR/facts.json bank`), or edit the line.
   kestrom kv verify-chat MODEL BANK_DIR TURNS.json REPORT.json [MAX_TOKENS] [MAX_MATCH] [PROBES.dsl]
       mechanically check multi-turn non-interference for `kestrom kv chat`: runs TURNS.json through `KVSession`, re-runs plain greedy
       decoding twice on every turn where `kv` is `null` using identical prompt ids, and writes REPORT.json checking determinism (U0) and
@@ -430,7 +437,7 @@ def compile(model_dir, rules_file, facts_file, out_dir, prev_dir=None, prefix_mo
             "strip_prefix": strip_prefix or [],
             "entries": manifest_entries,
         }
-        (tmp_path / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+        _write_json(tmp_path / "manifest.json", manifest)
         if out_path.exists():
             out_path.rmdir()
         tmp_path.replace(out_path)
@@ -656,11 +663,28 @@ def _opt_arg(v):
     return None if v is None or str(v).lower() in ("", "-", "none") else v
 
 
-def chat(model_dir, bank_dir, max_tokens=report.MAX_TOKENS, max_match=3, turns_file=None, out_file=None, probes_file=None):
-    """Run an interactive or scripted multi-turn session (`kestrom kv chat`) over a compiled KV bank."""
+def _limits(max_tokens, max_match) -> tuple[int, int]:
     max_tokens, max_match = int(max_tokens), int(max_match)
     if max_tokens < 1 or max_match < 1:
         raise SystemExit("MAX_TOKENS and MAX_MATCH must be at least 1")
+    return max_tokens, max_match
+
+
+def _turn_entry(idx: int, entry) -> tuple[str, dict | None, dict | None, bool]:
+    """A TURNS.json entry as (text, values, data, reset)."""
+    if isinstance(entry, str):
+        return entry, None, None, False
+    if not isinstance(entry, dict):
+        raise SystemExit(f"TURNS.json entry {idx} must be a string or object: {entry!r}")
+    text = entry.get("user", entry.get("text"))
+    if not isinstance(text, str):
+        raise SystemExit(f"TURNS.json entry {idx} ({entry!r}): requires 'user' or 'text'")
+    return text, entry.get("values"), entry.get("data"), bool(entry.get("reset"))
+
+
+def chat(model_dir, bank_dir, max_tokens=report.MAX_TOKENS, max_match=3, turns_file=None, out_file=None, probes_file=None):
+    """Run an interactive or scripted multi-turn session (`kestrom kv chat`) over a compiled KV bank."""
+    max_tokens, max_match = _limits(max_tokens, max_match)
     turns_file, out_file, probes_file = _opt_arg(turns_file), _opt_arg(out_file), _opt_arg(probes_file)
     if (turns_file is None) != (out_file is None):
         raise SystemExit("give TURNS.json and OUT.jsonl together, or neither (use '-' for both when passing PROBES.dsl interactively)")
@@ -676,21 +700,15 @@ def chat(model_dir, bank_dir, max_tokens=report.MAX_TOKENS, max_match=3, turns_f
 
     if turns is not None:
         f = open(out_file, "w", encoding="utf-8")  # one line per turn as it is done (a long run keeps what it finished)
-        for entry in turns:
-            if isinstance(entry, str):
-                res = session.turn(entry)
-            elif isinstance(entry, dict):
-                if entry.get("reset"):
-                    session.reset()
-                text = entry.get("user", entry.get("text"))
-                if not isinstance(text, str):
-                    raise SystemExit(f"TURNS.json entry {entry!r}: requires 'user' or 'text'")
-                res = session.turn(text, values=entry.get("values"), data=entry.get("data"))
+        for idx, entry in enumerate(turns):
+            text, values, data, do_reset = _turn_entry(idx, entry)
+            if do_reset:
+                session.reset()
+            res = session.turn(text, values=values, data=data)
+            if isinstance(entry, dict):
                 for k, v in entry.items():
                     if k not in ("user", "text", "values", "data", "reset") and k not in res:
                         res[k] = v
-            else:
-                raise SystemExit(f"TURNS.json entry must be a string or object: {entry!r}")
             f.write(json.dumps(res, ensure_ascii=False) + "\n")
             f.flush()
             print(
@@ -808,7 +826,10 @@ def _parse_yaml_rows_stdlib(text: str) -> list[dict]:
 
 
 def _read_markdown_table(text: str) -> list[dict]:
-    table_lines = [ln.strip() for ln in text.splitlines() if "|" in ln and ln.strip().startswith("|")]
+    lines = [ln.strip() for ln in text.splitlines()]
+    start = next((i for i, ln in enumerate(lines) if ln.startswith("|")), len(lines))
+    end = next((i for i in range(start, len(lines)) if not lines[i].startswith("|")), len(lines))
+    table_lines = lines[start:end]  # the first table only
     if len(table_lines) < 3:
         raise SystemExit("Markdown file must contain a pipe table with header, separator, and at least one data row")
 
@@ -875,14 +896,22 @@ def _pick_col(row_ci: dict, aliases: tuple[str, ...]):
 
 
 def _split_triggers(raw) -> list[str]:
+    """Triggers from a list, or from a string split on `|` (on `,` when it has no `|`); a whole `/regex/` term may hold either."""
     if isinstance(raw, list):
-        items = [str(x).strip() for x in raw if str(x).strip()]
-    elif isinstance(raw, str):
-        sep = "|" if "|" in raw else ","
-        items = [p.strip() for p in raw.split(sep) if p.strip()]
-    else:
-        items = []
-    return items
+        return [str(x).strip() for x in raw if str(x).strip()]
+    if not isinstance(raw, str):
+        return []
+    parts = re.findall(r"(?:^|(?<=[|,]))\s*/(?:\\.|[^\\/])+/\s*(?=[|,]|$)|[^|,]+|[|,]", raw)
+    sep = "|" if "|" in parts else ","
+    items, cur = [], ""
+    for p in parts:
+        if p == sep:
+            items.append(cur)
+            cur = ""
+        else:
+            cur += p
+    items.append(cur)
+    return [t.strip() for t in items if t.strip()]
 
 
 def _compile_trigger_term(term: str) -> str:
@@ -891,10 +920,6 @@ def _compile_trigger_term(term: str) -> str:
         inner = t[1:-1]
         if not inner:
             raise SystemExit("empty regex trigger '//'")
-        try:
-            re.compile(inner)
-        except re.error as exc:
-            raise SystemExit(f"invalid regex trigger {t!r}: {exc}") from exc
         return inner
     esc = re.escape(t)
     if re.fullmatch(r"[\x00-\x7f]+", t) and re.search(r"[A-Za-z0-9]", t):
@@ -949,6 +974,10 @@ def from_table(table_file, out_dir):
     for i, item in enumerate(parsed_entries):
         head = f"h{i}"
         pat = "|".join(_compile_trigger_term(t) for t in item["triggers"])
+        try:
+            re.compile(pat)  # the joined pattern, as the rules compile it (a flag such as `(?i)` is valid only at its start)
+        except re.error as exc:
+            raise SystemExit(f"{src_path} row {item['idx']} ({item['key']!r}): invalid triggers {pat!r}: {exc}") from exc
         dsl_lines.extend([
             f"in m_{i}: match {json.dumps(pat, ensure_ascii=False)}",
             f"h1 u_{i}: any(m_{i})",
@@ -1082,18 +1111,7 @@ def verify_chat_session(
     rows = []
     history_pure = True
     for idx, entry in enumerate(turns):
-        if isinstance(entry, str):
-            text, values, data, do_reset = entry, None, None, False
-        elif isinstance(entry, dict):
-            do_reset = bool(entry.get("reset"))
-            text = entry.get("user", entry.get("text"))
-            if not isinstance(text, str):
-                raise SystemExit(f"TURNS.json entry {idx} ({entry!r}): requires 'user' or 'text'")
-            values = entry.get("values")
-            data = entry.get("data")
-        else:
-            raise SystemExit(f"TURNS.json entry {idx} must be a string or object: {entry!r}")
-
+        text, values, data, do_reset = _turn_entry(idx, entry)
         if do_reset:
             session.reset()
             history_pure = True
@@ -1155,9 +1173,7 @@ def verify_chat_session(
 
 def verify_chat(model_dir, bank_dir, turns_file, out_report, max_tokens=report.MAX_TOKENS, max_match=3, probes_file=None):
     """CLI handler: verify non-interference (`U0` and `G2`) of all `kv=None` turns in `kestrom kv chat`."""
-    max_tokens, max_match = int(max_tokens), int(max_match)
-    if max_tokens < 1 or max_match < 1:
-        raise SystemExit("MAX_TOKENS and MAX_MATCH must be at least 1")
+    max_tokens, max_match = _limits(max_tokens, max_match)
     probes_file = _opt_arg(probes_file)
     prompt_probes = load_prompt_probes(probes_file) if probes_file is not None else None
     bpath = Path(bank_dir)
