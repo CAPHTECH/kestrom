@@ -834,3 +834,228 @@ def test_model_fingerprint_rejects_same_size_weight_tampering(tmp_path):
     shard.write_bytes(b"weights-originaX")
     with pytest.raises(SystemExit):
         kv.check_model(bank, model_dir)
+
+
+def test_kv_from_table_formats_collisions_and_determinism(tmp_path):
+    csv_p = tmp_path / "specs.csv"
+    csv_p.write_text(
+        "key,triggers,fact,prompt,outside\n"
+        'ac,空調|エアコン|/air\\s+cond/,2階空調は30kWです。,2階の空調について教えてください,Compute 17 + 28.\n'
+        'light,照明|LED,"3階はLED照明です。",3階の照明は？,\n',
+        encoding="utf-8",
+    )
+    rep_csv = kv.from_table(str(csv_p), str(tmp_path / "out_csv"))
+    assert rep_csv["verdict"] == "PASS" and rep_csv["totals"] == {
+        "entries": 2, "positive": 2, "positive_exact": 2, "outside": 1, "outside_quiet": 1, "collisions": 0,
+    }
+    assert (tmp_path / "out_csv" / "generate.dsl").read_text(encoding="utf-8") == "kv: bank 3\n"
+    R_csv = rules.standalone(str(tmp_path / "out_csv" / "rules.dsl"))
+    assert len(kv.parse_facts(json.loads((tmp_path / "out_csv" / "facts.json").read_text(encoding="utf-8")), R_csv)) == 2
+    # Regex branch /air\s+cond/ matches while outside stays None on all heads
+    assert next(rules.answers(R_csv, [{"text": "check air  cond"}]))[0]["class"] == {"h0": "hit", "h1": None}
+    assert next(rules.answers(R_csv, [{"text": "Compute 17 + 28."}]))[0]["class"] == {"h0": None, "h1": None}
+
+    # Determinism: running twice produces byte-for-byte identical report
+    rep_csv2 = tmp_path / "out_csv2"
+    kv.from_table(str(csv_p), str(rep_csv2))
+    assert (tmp_path / "out_csv" / "from_table_report.json").read_bytes() == (rep_csv2 / "from_table_report.json").read_bytes()
+
+    # TSV, JSON, Markdown pipe table, and YAML (plus stdlib YAML parser unit check)
+    tsv_p = tmp_path / "specs.tsv"
+    tsv_p.write_text("id\tkeywords\ttext\nalpha\tAlpha|βプラン\tAlpha fact.\n", encoding="utf-8")
+    assert kv.from_table(str(tsv_p), str(tmp_path / "out_tsv"))["totals"]["outside"] == 4
+
+    json_p = tmp_path / "specs.json"
+    json_p.write_text(json.dumps({"rows": [{"key": "k1", "triggers": ["widget-9"], "fact": "Widget 9 spec."}]}), encoding="utf-8")
+    assert kv.from_table(str(json_p), str(tmp_path / "out_json"))["verdict"] == "PASS"
+
+    md_p = tmp_path / "specs.md"
+    md_p.write_text(
+        "| key | triggers | fact | prompt |\n"
+        "|---|---|---|---|\n"
+        "| m1 | 型番A \\| Model-A | Model-A is 24V. | Tell me about Model-A |\n",
+        encoding="utf-8",
+    )
+    assert kv.from_table(str(md_p), str(tmp_path / "out_md"))["verdict"] == "PASS"
+
+    yaml_text = (
+        "# Sample spec\n"
+        "- key: y1\n"
+        "  triggers: [foo-bar, baz]\n"
+        '  fact: "Foo bar is enabled."\n'
+        "- key: y2\n"
+        "  triggers:\n"
+        "    - qux\n"
+        "  fact: Qux spec.\n"
+    )
+    parsed_yml = kv._parse_yaml_rows_stdlib(yaml_text)
+    assert len(parsed_yml) == 2 and parsed_yml[0]["triggers"] == ["foo-bar", "baz"] and parsed_yml[1]["triggers"] == ["qux"]
+    yml_p = tmp_path / "specs.yml"
+    yml_p.write_text(yaml_text, encoding="utf-8")
+    assert kv.from_table(str(yml_p), str(tmp_path / "out_yml"))["verdict"] == "PASS"
+
+    # Overlapping keyword causes multi-head collision -> FAIL and exit 1
+    bad_p = tmp_path / "bad.csv"
+    bad_p.write_text(
+        "key,triggers,fact,prompt\n"
+        "a,reset|alpha,Fact A.,reset device\n"
+        "b,reset|beta,Fact B.,beta config\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(SystemExit):
+        kv.from_table(str(bad_p), str(tmp_path / "out_bad"))
+    bad_rep = json.loads((tmp_path / "out_bad" / "from_table_report.json").read_text(encoding="utf-8"))
+    assert bad_rep["verdict"] == "FAIL" and bad_rep["totals"]["collisions"] == 1
+
+
+def test_kv_verify_chat_session_and_failure_modes(tmp_path):
+    dsl = tmp_path / "r.dsl"
+    dsl.write_text(
+        'in bw: match "billing"\n'
+        'h1 b: all(bw)\n'
+        'h2 B: any(b)\n'
+        'out meter/billing: 1*B\n',
+        encoding="utf-8",
+    )
+    bank = {
+        "dir": str(tmp_path),
+        "rules": rules.standalone(str(dsl)),
+        "strip_prefix": [2],
+        "prefix_mode": "system",
+        "entries": [{"key": "billing", "when": {"meter": "billing"}, "text": "Billing is due.", "file": "b.safetensors"}],
+    }
+    tok = MultiTurnMockTok()
+
+    class FakeCC:
+        def get_or_build(self, model, tok, bank, hits):
+            return ["kv", hits[0]["key"]]
+
+    def det_decode(feed_ids, cache):
+        is_kv = isinstance(cache, list) and len(cache) == 2 and cache[0] == "kv"
+        toks = [100 + ord("k")] if is_kv else [100 + (len(feed_ids) % 20), 101]
+        return toks, "stop", toks + [31]
+
+    turns = [
+        "hello world",
+        "check billing please",
+        "switch back to python chat",
+        {"user": "fresh turn after reset", "reset": True},
+    ]
+    res = kv.verify_chat_session(
+        None, tok, bank, turns, max_tokens=16, max_match=1,
+        compose_cache=FakeCC(), decode_fn=det_decode, make_cache_fn=lambda m: ["plain"],
+    )
+    assert res["verdict"] == "PASS" and res["totals"] == {
+        "turns": 4,
+        "kv_matched_turns": 1,
+        "kv_none_turns": 3,
+        "kv_none_history_pure": 2,
+        "kv_none_u0_equal": 3,
+        "kv_none_bit_identical": 3,
+    }
+    assert res["rows"][0]["history_pure"] is True and res["rows"][2]["history_pure"] is False and res["rows"][3]["history_pure"] is True
+
+    # Tampered kv=None decode fails G2 with exact first_difference
+    calls = {"n": 0}
+
+    def tampered_decode(feed_ids, cache):
+        calls["n"] += 1
+        if calls["n"] == 1:  # first session turn output differs from baseline plain runs
+            return [100 + 9, 102], "stop", [100 + 9, 102, 31]
+        toks = [100 + 9, 101]
+        return toks, "stop", toks + [31]
+
+    bad_g2 = kv.verify_chat_session(
+        None, tok, bank, ["plain only"], max_tokens=16, max_match=1,
+        compose_cache=FakeCC(), decode_fn=tampered_decode, make_cache_fn=lambda m: ["plain"],
+    )
+    assert bad_g2["verdict"] == "FAIL" and bad_g2["rows"][0]["u0_equal"] is True
+    assert bad_g2["rows"][0]["bit_identical"] is False and bad_g2["rows"][0]["first_difference"] == 1
+
+    # Non-deterministic plain decode fails U0
+    u0_calls = {"n": 0}
+
+    def flaky_decode(feed_ids, cache):
+        u0_calls["n"] += 1
+        toks = [110] if u0_calls["n"] % 2 else [111]
+        return toks, "stop", toks + [31]
+
+    bad_u0 = kv.verify_chat_session(
+        None, tok, bank, ["plain only"], max_tokens=16, max_match=1,
+        compose_cache=FakeCC(), decode_fn=flaky_decode, make_cache_fn=lambda m: ["plain"],
+    )
+    assert bad_u0["verdict"] == "FAIL" and bad_u0["totals"]["kv_none_u0_equal"] == 0
+
+    # Zero kv=None turns fails (checked nothing)
+    no_none = kv.verify_chat_session(
+        None, tok, bank, ["check billing"], max_tokens=16, max_match=1,
+        compose_cache=FakeCC(), decode_fn=det_decode, make_cache_fn=lambda m: ["plain"],
+    )
+    assert no_none["verdict"] == "FAIL" and no_none["totals"]["kv_none_turns"] == 0
+
+
+def test_kv_template_compatibility_fallback_and_check_cli(tmp_path, monkeypatch):
+    class NoSystemTok:
+        bos_token_id = 2
+
+        def apply_chat_template(self, messages, add_generation_prompt=True, enable_thinking=False):
+            out = [self.bos_token_id]
+            for m in messages:
+                if m["role"] == "system":
+                    raise ValueError("System role not supported")
+                role_tok = 20 if m["role"] == "user" else 30
+                out += [role_tok] + [100 + ord(c) for c in m["content"]] + [role_tok + 1]
+            return out
+
+    qwen_tok = MockTok(bos=None)
+    gemma4_tok = MockTok(bos=2)
+    no_sys_tok = NoSystemTok()
+    merged_tok = MockTok(bos=2, bad_mode="merged")
+    varies_tok = MockTok(bos=2, bad_mode="varies")
+
+    assert kv.inspect_template(qwen_tok)["recommended_mode"] == "system"
+    assert kv.inspect_template(gemma4_tok)["recommended_mode"] == "system"
+    res_ns = kv.inspect_template(no_sys_tok)
+    assert not res_ns["system"]["ok"] and "System role not supported" in res_ns["system"]["error"]
+    assert res_ns["prefix_turn"]["ok"] and res_ns["recommended_mode"] == "prefix-turn"
+    assert kv.inspect_template(merged_tok)["recommended_mode"] is None
+    assert kv.inspect_template(varies_tok)["recommended_mode"] is None
+
+    # resolve_prefix_boundary `auto` selects prefix-turn on system-less template; `system` gives clear hint
+    with pytest.raises(SystemExit, match="PREFIX_MODE=prefix-turn"):
+        kv.resolve_prefix_boundary(no_sys_tok, "Fact.", mode="system")
+    sp, pfx, chosen = kv.resolve_prefix_boundary(no_sys_tok, "Fact.", mode="auto")
+    assert sp == [2] and chosen == "prefix-turn" and len(pfx) > 2
+    with pytest.raises(SystemExit, match="incompatible with both"):
+        kv.resolve_prefix_boundary(varies_tok, "Fact.", mode="auto")
+
+    # ComposeCache respects bank["prefix_mode"] == "prefix-turn"
+    seen_prefix = []
+    monkeypatch.setattr(kv, "prefill_prefix", lambda model, prefix_ids: seen_prefix.append(prefix_ids) or ["c"])
+    monkeypatch.setattr(kv, "clone_cache", lambda c: list(c))
+    cc = kv.ComposeCache(maxsize=4)
+    fake_bank = {"dir": str(tmp_path), "strip_prefix": [2], "prefix_mode": "prefix-turn"}
+    cc.get_or_build(None, no_sys_tok, fake_bank, [{"key": "a", "text": "F1."}, {"key": "b", "text": "F2."}])
+    assert len(seen_prefix) == 1 and seen_prefix[0][0] == 2
+
+    # check_template CLI writes deterministic JSON and exits 1 when incompatible
+    class FakeAutoTokenizer:
+        @staticmethod
+        def from_pretrained(path):
+            return varies_tok if "varies" in path else no_sys_tok
+
+    fake_tr = types.ModuleType("transformers")
+    fake_tr.AutoTokenizer = FakeAutoTokenizer
+    monkeypatch.setitem(sys.modules, "transformers", fake_tr)
+
+    rep1 = tmp_path / "tpl1.json"
+    rep2 = tmp_path / "tpl2.json"
+    kv.check_template(str(tmp_path / "gemma2-model"), str(rep1))
+    kv.check_template(str(tmp_path / "gemma2-model"), str(rep2))
+    assert rep1.read_bytes() == rep2.read_bytes()
+    assert json.loads(rep1.read_text(encoding="utf-8"))["recommended_mode"] == "prefix-turn"
+
+    with pytest.raises(SystemExit):
+        kv.check_template(str(tmp_path / "varies-model"), str(tmp_path / "bad_tpl.json"))
+    assert json.loads((tmp_path / "bad_tpl.json").read_text(encoding="utf-8"))["recommended_mode"] is None
+

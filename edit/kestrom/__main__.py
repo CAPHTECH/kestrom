@@ -4,10 +4,14 @@ Supported commands (enterprise / audit / runtime):
   generate MODEL PROMPTS.json OUT.jsonl [--rules RULES.dsl|FIT.npz] [--max-tokens N]
                                                         greedy decoding with the inference-time edits of a rules file; the
                                                         output is the original's until the first event
-  kv compile MODEL RULES.dsl FACTS.json OUT_DIR [PREV_DIR]
+  kv compile MODEL RULES.dsl FACTS.json OUT_DIR [PREV_DIR] [PREFIX_MODE]
                                                         compile per-fact prefix KV caches from a rules DSL (`kv:` line in generate)
   kv chat MODEL BANK_DIR [MAX_TOKENS] [MAX_MATCH] [TURNS.json] [OUT.jsonl] [PROBES.dsl]
                                                         multi-turn chat session over a KV bank (`steps`/`prev` + optional prompt probes)
+  kv from-table TABLE_FILE OUT_DIR                      compile a CSV/TSV/YAML/JSON/MD spec table into rules.dsl, facts.json & regression check
+  kv verify-chat MODEL BANK_DIR TURNS.json REPORT.json [MAX_TOKENS] [MAX_MATCH] [PROBES.dsl]
+                                                        verify kv=None chat turns match plain decoding bit for bit (U0 and G2)
+  kv check-template MODEL [OUT.json]                    inspect chat-template prefix isolation (system vs prefix-turn fallback)
   ifc {control, firewall} ...                           twin-track information flow control at decoding time (tier 1: check
                                                         with kestrom-verify compare events; MLX and PyTorch/CUDA)
   rules fit MODEL RULES.dsl DATA.json OUT.npz [BALANCE] [K] [STEPS] [LR] [LAYER]
@@ -51,7 +55,7 @@ import sys
 from kestrom_verify import call
 
 # command: (the module whose docstring is its help, its function or {kind: function}); "module:function" for another module
-COMMANDS = {"generate": ("generate", "main"), "kv": ("kv", {"compile": "compile", "chat": "chat"}),
+COMMANDS = {"generate": ("generate", "main"), "kv": ("kv", {"compile": "compile", "chat": "chat", "from-table": "from_table", "verify-chat": "verify_chat", "check-template": "check_template"}),
             "bridge": ("bridge", {"fit": "fit", "map": "map_steer", "rules": "map_rules", "chain": "chain"}),
             "ifc": ("ifc", {"control": "control", "firewall": "firewall"}),
             "rules": ("rules", {"fit": "fit", "write-mlp": "mlp:write_mlp", "run": "run", "build": "build", "weigh": "weigh"}),

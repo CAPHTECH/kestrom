@@ -37,3 +37,13 @@ The verdict is computed from these keys (`kestrom_verify.report.verdict`), so `s
 | `checks` | `audit` | Ordered list of checks (`diff` at `tier` 2 when `BASE_DIR` is given, with `status` `PASS` / `MEASURED` / `FLAGGED`, `summary`, `outside`; `mirror` at `tier` 3 with `status` `NO_FINDINGS` / `FLAGGED`, `quantizer`, `tensors_scanned`, `flagged`, `reasons`, `weight_summary`) |
 | `reproduce` | `audit` | Shell commands to reproduce the underlying `kestrom-verify diff` and `kestrom inspect mirror` runs |
 | `limitations` | `audit` | Explicit tier scope statements (tier 2 `diff` does not bound outputs; tier 3 `mirror` is statistical evidence, not mathematical proof) |
+
+## Operational KV reports (`kestrom kv from-table`, `verify-chat`, `check-template`)
+
+These commands write deterministic, timestamp-free JSON (`indent=1`, exit `1` on `FAIL` or incompatible templates):
+
+| Schema | Written by | Key fields |
+|---|---|---|
+| `"kestrom-kv-table-v1"` | `kv from-table` | `source` (`{file: sha256}`), `outputs` (`rules.dsl`, `facts.json`, `generate.dsl`, `regression.json` hashes), `totals` (`entries`, `positive`, `positive_exact`, `outside`, `outside_quiet`, `collisions`), `collisions`, `verdict` (`"PASS"` \| `"FAIL"`) |
+| `"kestrom-kv-verify-chat-v1"` | `kv verify-chat` | `bank` (`manifest.json`, `rules.dsl` hashes), `turns_file`, `settings` (`max_tokens`, `max_match`, `prefix_mode`), `totals` (`turns`, `kv_matched_turns`, `kv_none_turns`, `kv_none_history_pure`, `kv_none_u0_equal`, `kv_none_bit_identical`), `rows`, `verdict` (`"PASS"` \| `"FAIL"`) |
+| `"kestrom-kv-template-v1"` | `kv check-template` | `model`, `system` (`ok`, `strip_prefix`, `prefix_len`, `error`), `prefix_turn` (same fields), `recommended_mode` (`"system"` \| `"prefix-turn"` \| `null`) |
