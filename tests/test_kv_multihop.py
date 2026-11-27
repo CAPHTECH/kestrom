@@ -64,8 +64,8 @@ def test_quantized_cache_roundtrip_all_types(tmp_path):
         assert isinstance(loaded[1], RotatingKVCache) and loaded[1].offset == 12
         assert isinstance(loaded[2], ArraysCache)
         assert loaded[0].keys.dtype == mx.bfloat16
-        assert float(mx.max(mx.abs(loaded[0].keys - c_kv.keys)).item()) < 0.08
-        assert float(mx.max(mx.abs(loaded[1].keys - c_rot.keys)).item()) < 0.08
+        assert float(mx.max(mx.abs(loaded[0].state[0] - c_kv.state[0])).item()) < 0.08
+        assert float(mx.max(mx.abs(loaded[1].state[0] - c_rot.state[0])).item()) < 0.08
 
 
 def test_compile_lazy_storage_and_storage_switch(tmp_path, monkeypatch):
@@ -382,9 +382,9 @@ def test_multihop_early_stop_3hop_and_outside_bit_identical(tmp_path):
             return [72], "stop", [72, 1]
         return [70], "stop", [70, 1]
 
-    p_2hop = {"id": "q_2hop", "ids": kv._chat_messages_ids(atok, [{"role": "user", "content": "Which lab hosts Alden Rook?"}])}
-    p_3hop = {"id": "q_3hop", "ids": kv._chat_messages_ids(atok, [{"role": "user", "content": "What security code does Alden Rook use?"}])}
-    p_out = {"id": "q_out", "ids": kv._chat_messages_ids(atok, [{"role": "user", "content": "What is 17 + 28?"}])}
+    p_2hop = {"id": "q_2hop", "question": "Which lab hosts Alden Rook?", "ids": kv._chat_messages_ids(atok, [{"role": "user", "content": "Which lab hosts Alden Rook?"}])}
+    p_3hop = {"id": "q_3hop", "question": "What security code does Alden Rook use?", "ids": kv._chat_messages_ids(atok, [{"role": "user", "content": "What security code does Alden Rook use?"}])}
+    p_out = {"id": "q_out", "question": "What is 17 + 28?", "ids": kv._chat_messages_ids(atok, [{"role": "user", "content": "What is 17 + 28?"}])}
 
     rows = kv_multihop.run_multihop_prompts(
         None,
@@ -403,3 +403,49 @@ def test_multihop_early_stop_3hop_and_outside_bit_identical(tmp_path):
     assert rows[0]["provenance"] == ["doc_p0", "doc_proj0"] and rows[0]["tokens"] == [72] and rows[0]["events"] == [0]
     assert rows[1]["provenance"] == ["doc_p0", "doc_proj0", "doc_lab0"] and rows[1]["tokens"] == [73] and rows[1]["events"] == [0]
     assert rows[2]["provenance"] == [] and rows[2]["tokens"] == [60, 61] and rows[2]["events"] == [] and rows[2]["kv"] is None
+
+    # ids-only prompts without question / data.text / text must be refused.
+    p_ids_only = {"id": "q_ids_only", "ids": kv._chat_messages_ids(atok, [{"role": "user", "content": "Alden Rook?"}])}
+    with pytest.raises(SystemExit, match="ids-only prompts are refused"):
+        kv_multihop.run_multihop_prompts(
+            None,
+            atok,
+            bank,
+            [p_ids_only],
+            max_tokens=16,
+            compose_cache=FakeCompose(),
+            decode_fn=clean_decode,
+            make_cache_fn=lambda m: ("plain",),
+        )
+
+
+def test_multihop_index_explicit_only_and_key_mismatch_refused(tmp_path):
+    dsl = tmp_path / "r.dsl"
+    dsl.write_text('in a: match "Alpha"\nh1 ha: any(a)\nh2 va: any(ha)\nout ha/hit: 1*va\n', encoding="utf-8")
+    bank = {
+        "dir": str(tmp_path),
+        "rules": rules.standalone(str(dsl)),
+        "strip_prefix": [2],
+        "storage": "lazy",
+        "entries": [{"key": "doc_a", "when": {"ha": "hit"}, "text": "Alpha -> Done", "file": None, "prefix_ids": [2, 10]}],
+    }
+    # A stale neighbor index.json must NOT be auto-discovered when index_file=None.
+    (tmp_path / "index.json").write_text(json.dumps({"spec_by_id": {"stale_doc": ["Alpha"]}}), encoding="utf-8")
+    assert kv_multihop._load_and_validate_index(bank, None) is None
+
+    bad_idx = tmp_path / "bad_index.json"
+    bad_idx.write_text(json.dumps({"spec_by_id": {"wrong_key": ["Alpha"]}}), encoding="utf-8")
+    with pytest.raises(SystemExit, match="do not match bank facts"):
+        kv_multihop._load_and_validate_index(bank, str(bad_idx))
+    with pytest.raises(SystemExit, match="do not match bank facts"):
+        kv_multihop.run_multihop_prompts(
+            None,
+            MockChatTok(bos=2),
+            bank,
+            [{"id": "q1", "question": "Alpha?", "ids": [2, 20, 100, 21]}],
+            index_obj={"spec_by_id": {"wrong_key": ["Alpha"]}},
+        )
+
+    good_idx = tmp_path / "good_index.json"
+    good_idx.write_text(json.dumps({"spec_by_id": {"doc_a": ["Alpha"]}}), encoding="utf-8")
+    assert kv_multihop._load_and_validate_index(bank, str(good_idx))["spec_by_id"] == {"doc_a": ["Alpha"]}

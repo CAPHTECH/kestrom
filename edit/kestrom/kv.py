@@ -315,7 +315,7 @@ def prefill_prefix(model, prefix_ids: list[int]):
 
 
 def _save_quantized_cache(out_file: Path, cache, metadata: dict, bits: int, group_size: int = QUANT_GROUP_SIZE):
-    """Save a prompt cache with group-wise quantized 2D+ float arrays (including RotatingKVCache / ArraysCache)."""
+    """Save a prompt cache with group-wise quantized 2D+ float arrays (supports mlx-lm 0.31.x and 0.32+)."""
     import mlx.core as mx
     from mlx.utils import tree_flatten
 
@@ -347,9 +347,16 @@ def _save_quantized_cache(out_file: Path, cache, metadata: dict, bits: int, grou
             raise ValueError(f"Model state is not serializable: {v}")
 
     classes = [type(c).__name__ for c in cache]
+    has_meta_state = any(hasattr(c, "meta_state") for c in cache)
     meta = dict(metadata or {})
-    meta[QUANT_META_KEY] = json.dumps({"bits": int(bits), "group_size": int(group_size), "dtypes": dtypes}, sort_keys=True)
-    flat_meta = dict(tree_flatten([meta, classes, scalars]))
+    qspec = {"bits": int(bits), "group_size": int(group_size), "dtypes": dtypes}
+    if has_meta_state:
+        qspec["scalars"] = [[k, kind] for k, kind in scalars[1:]]
+        meta[QUANT_META_KEY] = json.dumps(qspec, sort_keys=True)
+        flat_meta = dict(tree_flatten([[getattr(c, "meta_state", "") for c in cache], meta, classes]))
+    else:
+        meta[QUANT_META_KEY] = json.dumps(qspec, sort_keys=True)
+        flat_meta = dict(tree_flatten([meta, classes, scalars]))
     mx.save_safetensors(str(out_file), arrays, flat_meta)
 
 
@@ -626,27 +633,39 @@ def format_kv_key(hits: list[dict]):
 
 
 def load_cache_file(path: str):
-    """Load a compiled prompt cache (`eager`, `q8`, or `q4`) from a `.safetensors` file."""
+    """Load a compiled prompt cache (`eager`, `q8`, or `q4`) across `mlx-lm` 0.31.x and 0.32+ layouts."""
     import mlx.core as mx
     from mlx.utils import tree_unflatten
     from mlx_lm.models import cache as mlx_cache
 
     arrays, raw_meta = mx.load(str(path), return_metadata=True)
-    metadata, classes, scalars = tree_unflatten(list(raw_meta.items()))
-    qspec = json.loads(metadata[QUANT_META_KEY]) if isinstance(metadata, dict) and QUANT_META_KEY in metadata else None
-    if qspec is not None:
-        bits = int(qspec["bits"])
-        group_size = int(qspec["group_size"])
-        dtype_map = {"float16": mx.float16, "bfloat16": mx.bfloat16, "float32": mx.float32}
-        for k, dt_name in qspec.get("dtypes", {}).items():
-            w = arrays.pop(k)
-            scales = arrays.pop(f"__q__.{k}.scales")
-            biases = arrays.pop(f"__q__.{k}.biases")
-            arrays[k] = mx.dequantize(
-                w, scales, biases, group_size=group_size, bits=bits, dtype=dtype_map[dt_name]
-            )
+    unflat = tree_unflatten(list(raw_meta.items()))
+    if len(unflat) == 3 and isinstance(unflat[0], dict):
+        metadata, classes, scalars = unflat
+        info = None
+    elif len(unflat) == 3 and isinstance(unflat[1], dict):
+        info, metadata, classes = unflat
+        scalars = [""]
+    else:
+        return mlx_cache.load_prompt_cache(str(path))
 
-    for pos, kind in scalars[1:]:
+    qspec = json.loads(metadata[QUANT_META_KEY]) if isinstance(metadata, dict) and QUANT_META_KEY in metadata else None
+    if qspec is None:
+        return mlx_cache.load_prompt_cache(str(path))
+
+    bits = int(qspec["bits"])
+    group_size = int(qspec["group_size"])
+    dtype_map = {"float16": mx.float16, "bfloat16": mx.bfloat16, "float32": mx.float32}
+    for k, dt_name in qspec.get("dtypes", {}).items():
+        w = arrays.pop(k)
+        scales = arrays.pop(f"__q__.{k}.scales")
+        biases = arrays.pop(f"__q__.{k}.biases")
+        arrays[k] = mx.dequantize(
+            w, scales, biases, group_size=group_size, bits=bits, dtype=dtype_map[dt_name]
+        )
+
+    scalar_entries = list(scalars[1:]) + [tuple(x) for x in qspec.get("scalars", [])]
+    for pos, kind in scalar_entries:
         arr = arrays[pos]
         if kind == "scalar":
             arrays[pos] = arr.item()
@@ -658,9 +677,11 @@ def load_cache_file(path: str):
             raise ValueError(f"[load_cache_file] Unknown type {kind}")
 
     state_tree = tree_unflatten(list(arrays.items()))
-    cache = [getattr(mlx_cache, cls_name).from_state(st) for cls_name, st in zip(classes, state_tree)]
-    if qspec is not None:
-        mx.eval([c.state for c in cache])
+    if info is not None:
+        cache = [getattr(mlx_cache, cls_name).from_state(st, ms) for cls_name, st, ms in zip(classes, state_tree, info)]
+    else:
+        cache = [getattr(mlx_cache, cls_name).from_state(st) for cls_name, st in zip(classes, state_tree)]
+    mx.eval([c.state for c in cache])
     return cache
 
 

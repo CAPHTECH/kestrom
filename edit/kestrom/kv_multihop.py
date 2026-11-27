@@ -822,13 +822,26 @@ def _is_sufficient(step_text: str) -> bool:
     return up.startswith("SUFFICIENT")
 
 
-def _discover_index(bank_dir: Path, index_file: str | None) -> dict | None:
-    if index_file is not None:
-        return report.read(index_file)
-    for cand in (bank_dir / "index.json", bank_dir.parent / "index.json"):
-        if cand.is_file():
-            return report.read(str(cand))
-    return None
+def _validate_index_against_bank(bank: dict, index_obj: dict, label: str = "INDEX.json") -> dict:
+    if not isinstance(index_obj, dict) or not isinstance(index_obj.get("spec_by_id"), dict):
+        raise SystemExit(f"{label}: expected JSON object with 'spec_by_id'")
+    idx_keys = set(index_obj["spec_by_id"].keys())
+    bank_keys = {e["key"] for e in bank["entries"]}
+    if idx_keys != bank_keys:
+        missing = sorted(bank_keys - idx_keys)[:5]
+        extra = sorted(idx_keys - bank_keys)[:5]
+        raise SystemExit(
+            f"{label}: document keys do not match bank facts "
+            f"(missing_from_index={missing}, extra_in_index={extra})"
+        )
+    return index_obj
+
+
+def _load_and_validate_index(bank: dict, index_file: str | None) -> dict | None:
+    if index_file is None:
+        return None
+    obj = report.read(index_file)
+    return _validate_index_against_bank(bank, obj, label=str(index_file))
 
 
 def _compile_index_matchers(index_obj: dict) -> tuple[dict, dict]:
@@ -930,6 +943,10 @@ def run_multihop_prompts(
     route_fn=None,
 ) -> list[dict]:
     """Run iterative multi-hop KV chaining over `prompts`, leaving unmatched prompts bit-identical (`events=[]`)."""
+    resolved_probe = _pick_probe_mode(probe_mode, bank, index_obj)
+    if index_obj is not None:
+        _validate_index_against_bank(bank, index_obj)
+
     compose = compose_cache if compose_cache is not None else kv.ComposeCache()
     if decode_fn is not None:
         _dec = decode_fn
@@ -944,7 +961,6 @@ def run_multihop_prompts(
         _mk_cache = make_prompt_cache
     _route = route_fn if route_fn is not None else (lambda ids: route_prompt(model, ids, router))
 
-    resolved_probe = _pick_probe_mode(probe_mode, bank, index_obj)
     entry_by_key = {e["key"]: e for e in bank["entries"]}
     fallback_bm25 = build_bm25_index(
         [{"doc_id": e["key"], "title": e["key"], "text": e["text"]} for e in bank["entries"]]
@@ -955,12 +971,11 @@ def run_multihop_prompts(
 
     for x in prompts:
         ids = [int(t) for t in x["ids"]]
-        query_text = (
-            x.get("question")
-            or (x.get("data") or {}).get("text")
-            or x.get("text")
-            or tok.decode(ids)
-        )
+        query_text = x.get("question") or (x.get("data") or {}).get("text") or x.get("text")
+        if not isinstance(query_text, str) or not query_text.strip():
+            raise SystemExit(
+                f"prompt {x.get('id')}: multihop requires 'question', 'data.text', or 'text' (ids-only prompts are refused)"
+            )
         route_diag = None
         active = []
         rejected_by_router = False
@@ -1098,9 +1113,10 @@ def multihop(
     if max_tokens < 1 or max_hops < 1 or max_active < 1:
         raise SystemExit("MAX_TOKENS, MAX_HOPS, and MAX_ACTIVE must be at least 1")
 
-    kv.check_model(kv.load_bank(bank_dir), model_dir)
+    bank_meta = kv.load_bank(bank_dir)
+    kv.check_model(bank_meta, model_dir)
     router = load_router(router_file, model_dir) if router_file is not None else None
-    index_obj = _discover_index(Path(bank_dir), index_file)
+    index_obj = _load_and_validate_index(bank_meta, index_file)
     prompts = report.read(prompts_file)
 
     from mlx_lm import load
