@@ -27,9 +27,9 @@ When a rules file combines `kv:` with `in NAME: prompt FILE LAYER` conditions, `
       own `values` win).
   kestrom kv from-table TABLE_FILE OUT_DIR
       generate `rules.dsl`, `facts.json`, `generate.dsl`, `regression.json`, and deterministic `from_table_report.json` from a CSV,
-      TSV, YAML, JSON (a list, or `{"rows": [...]}` / `{"entries": [...]}`), or Markdown pipe table (the file's first table), and
-      verify with `rules.answers` that every positive sample hits only its own key and every outside sample matches nothing (exits 1 on
-      FAIL). Columns (any case): key `key`/`id`/`name`; triggers `triggers`/`trigger`/`keywords`/`keyword`/`pattern`/`match`, a list
+      TSV, YAML (requires PyYAML, a list or `{"rows": [...]}` / `{"entries": [...]}`), JSON (a list, or `{"rows": [...]}` /
+      `{"entries": [...]}`), or Markdown pipe table (the file's first table), and verify with `rules.answers` that every positive sample
+      hits only its own key and every outside sample matches nothing (exits 1 on FAIL). Columns (any case): key `key`/`id`/`name`; triggers `triggers`/`trigger`/`keywords`/`keyword`/`pattern`/`match`, a list
       or a string split on `|` (on `,` when it has no `|`), each a literal (ASCII words match whole) or a whole `/regex/` term (it may
       hold `|` or `,`); fact `fact`/`text`/`value`/`content`; optional positive sample `prompt`/`sample_prompt`/`question` (default:
       the first literal trigger; required when every trigger is a regex); optional outside samples `outside`/`negative`, a list or a
@@ -746,85 +746,6 @@ def chat(model_dir, bank_dir, max_tokens=report.MAX_TOKENS, max_match=3, turns_f
         print(res["text"], flush=True)
 
 
-def _strip_yaml_comment(line: str) -> str:
-    in_sq = False
-    in_dq = False
-    for i, ch in enumerate(line):
-        if ch == "'" and not in_dq:
-            in_sq = not in_sq
-        elif ch == '"' and not in_sq and (i == 0 or line[i - 1] != "\\"):
-            in_dq = not in_dq
-        elif ch == "#" and not in_sq and not in_dq and (i == 0 or line[i - 1].isspace()):
-            return line[:i]
-    return line
-
-
-def _unquote_yaml_scalar(s: str):
-    s = s.strip()
-    if not s:
-        return ""
-    if s[0] == '"' and s[-1] == '"' and len(s) >= 2:
-        try:
-            return json.loads(s)
-        except json.JSONDecodeError:
-            return s[1:-1]
-    if s[0] == "'" and s[-1] == "'" and len(s) >= 2:
-        return s[1:-1].replace("''", "'")
-    if s.startswith("[") and s.endswith("]"):
-        inner = s[1:-1].strip()
-        if not inner:
-            return []
-        return [_unquote_yaml_scalar(part) for part in next(csv.reader([inner]))]
-    return s
-
-
-def _parse_yaml_rows_stdlib(text: str) -> list[dict]:
-    """Minimal dependency-free parser for flat YAML list-of-mappings spec tables."""
-    items, cur, list_key = [], None, None
-    for raw_line in text.splitlines():
-        line = _strip_yaml_comment(raw_line).rstrip()
-        if not line.strip():
-            continue
-        indent = len(line) - len(line.lstrip())
-        stripped = line.strip()
-        if stripped.startswith("- ") and (indent == 0 or cur is None or list_key is None):
-            rest = stripped[2:].strip()
-            if ":" in rest:
-                cur = {}
-                items.append(cur)
-                list_key = None
-                k, _, v = rest.partition(":")
-                k, v = k.strip(), v.strip()
-                if v:
-                    cur[k] = _unquote_yaml_scalar(v)
-                else:
-                    cur[k] = []
-                    list_key = k
-                continue
-        if stripped == "-" and cur is None:
-            cur = {}
-            items.append(cur)
-            list_key = None
-            continue
-        if stripped.startswith("- ") and cur is not None and list_key is not None:
-            if isinstance(cur.get(list_key), list):
-                cur[list_key].append(_unquote_yaml_scalar(stripped[2:]))
-                continue
-        if cur is None:
-            cur = {}
-            items.append(cur)
-        if ":" in stripped:
-            k, _, v = stripped.partition(":")
-            k, v = k.strip(), v.strip()
-            if v:
-                cur[k] = _unquote_yaml_scalar(v)
-                list_key = None
-            else:
-                cur[k] = []
-                list_key = k
-    return items
-
-
 def _read_markdown_table(text: str) -> list[dict]:
     lines = [ln.strip() for ln in text.splitlines()]
     start = next((i for i, ln in enumerate(lines) if ln.startswith("|")), len(lines))
@@ -871,12 +792,14 @@ def _read_spec_table(path: Path) -> list[dict]:
     if suf in (".yaml", ".yml"):
         try:
             import yaml
-
+        except ImportError as exc:
+            raise SystemExit(f"{path}: reading YAML spec tables requires PyYAML (pip install pyyaml)") from exc
+        try:
             obj = yaml.safe_load(text)
-            if isinstance(obj, dict):
-                obj = obj.get("rows", obj.get("entries"))
-        except ImportError:
-            obj = _parse_yaml_rows_stdlib(text)
+        except yaml.YAMLError as exc:
+            raise SystemExit(f"{path}: invalid YAML: {exc}") from exc
+        if isinstance(obj, dict):
+            obj = obj.get("rows", obj.get("entries"))
         if not isinstance(obj, list) or not all(isinstance(r, dict) for r in obj):
             raise SystemExit(f"{path}: YAML spec table must decode to a list of mappings")
         return obj

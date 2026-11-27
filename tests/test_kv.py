@@ -860,7 +860,7 @@ def test_kv_from_table_formats_collisions_and_determinism(tmp_path):
     kv.from_table(str(csv_p), str(rep_csv2))
     assert (tmp_path / "out_csv" / "from_table_report.json").read_bytes() == (rep_csv2 / "from_table_report.json").read_bytes()
 
-    # TSV, JSON, Markdown pipe table, and YAML (plus stdlib YAML parser unit check)
+    # TSV, JSON, and Markdown pipe table
     tsv_p = tmp_path / "specs.tsv"
     tsv_p.write_text("id\tkeywords\ttext\nalpha\tAlpha|βプラン\tAlpha fact.\n", encoding="utf-8")
     assert kv.from_table(str(tsv_p), str(tmp_path / "out_tsv"))["totals"]["outside"] == 4
@@ -878,22 +878,6 @@ def test_kv_from_table_formats_collisions_and_determinism(tmp_path):
     )
     assert kv.from_table(str(md_p), str(tmp_path / "out_md"))["verdict"] == "PASS"
 
-    yaml_text = (
-        "# Sample spec\n"
-        "- key: y1\n"
-        "  triggers: [foo-bar, baz]\n"
-        '  fact: "Foo bar is enabled."\n'
-        "- key: y2\n"
-        "  triggers:\n"
-        "    - qux\n"
-        "  fact: Qux spec.\n"
-    )
-    parsed_yml = kv._parse_yaml_rows_stdlib(yaml_text)
-    assert len(parsed_yml) == 2 and parsed_yml[0]["triggers"] == ["foo-bar", "baz"] and parsed_yml[1]["triggers"] == ["qux"]
-    yml_p = tmp_path / "specs.yml"
-    yml_p.write_text(yaml_text, encoding="utf-8")
-    assert kv.from_table(str(yml_p), str(tmp_path / "out_yml"))["verdict"] == "PASS"
-
     # Overlapping keyword causes multi-head collision -> FAIL and exit 1
     bad_p = tmp_path / "bad.csv"
     bad_p.write_text(
@@ -906,6 +890,41 @@ def test_kv_from_table_formats_collisions_and_determinism(tmp_path):
         kv.from_table(str(bad_p), str(tmp_path / "out_bad"))
     bad_rep = json.loads((tmp_path / "out_bad" / "from_table_report.json").read_text(encoding="utf-8"))
     assert bad_rep["verdict"] == "FAIL" and bad_rep["totals"]["collisions"] == 1
+
+
+def test_kv_from_table_yaml_missing_pyyaml(tmp_path, monkeypatch):
+    yml_p = tmp_path / "specs.yml"
+    yml_p.write_text("- key: y1\n  triggers: [foo]\n  fact: Foo.\n", encoding="utf-8")
+    monkeypatch.setitem(sys.modules, "yaml", None)
+    with pytest.raises(SystemExit, match="requires PyYAML"):
+        kv.from_table(str(yml_p), str(tmp_path / "out_yaml_missing"))
+
+
+def test_kv_from_table_yaml_with_pyyaml(tmp_path):
+    pytest.importorskip("yaml")
+    yml_list = tmp_path / "list.yml"
+    yml_list.write_text(
+        "# Sample spec\n"
+        "- key: y1\n"
+        "  triggers: [foo-bar, baz]  # inline list + comment\n"
+        '  fact: "Foo bar is enabled."\n'
+        "- key: y2\n"
+        "  triggers:\n"
+        "    - qux\n"
+        "  fact: \"It's Qux #1 spec.\"\n",
+        encoding="utf-8",
+    )
+    assert kv.from_table(str(yml_list), str(tmp_path / "out_list"))["verdict"] == "PASS"
+
+    yml_wrap = tmp_path / "wrapped.yaml"
+    yml_wrap.write_text(
+        "rows:\n"
+        "  - key: r1\n"
+        "    triggers: [alpha-9]\n"
+        "    fact: Alpha 9 spec.\n",
+        encoding="utf-8",
+    )
+    assert kv.from_table(str(yml_wrap), str(tmp_path / "out_wrap"))["verdict"] == "PASS"
 
 
 def test_kv_from_table_regex_terms_flags_and_first_markdown_table(tmp_path):
