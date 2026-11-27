@@ -7,24 +7,40 @@ with `kestrom-verify compare events`.
 `kestrom generate` and `kestrom kv chat` refuse a bank whose `rules.dsl` or cache files are not the ones its `manifest.json` hashed, or
 whose model fingerprint (hashes of the model's config, tokenizer, and `.safetensors` shard files) is not the model's.
 When a rules file combines `kv:` with `in NAME: prompt FILE LAYER` conditions, `in ... prompt` is evaluated on the full prompt without the fact KV cache before decoding begins and passed as 0/1 `values` to the bank's rules.
-  kestrom kv compile MODEL RULES.dsl FACTS.json OUT_DIR [PREV_DIR] [PREFIX_MODE]
-      compile one `.safetensors` prefix KV file per entry in FACTS.json into OUT_DIR, together with `rules.dsl` and
+  kestrom kv compile MODEL RULES.dsl FACTS.json OUT_DIR [PREV_DIR] [PREFIX_MODE] [STORAGE]
+      compile one prefix KV entry per fact in FACTS.json into OUT_DIR, together with `rules.dsl` and
       `manifest.json`. FACTS.json is either `{CLASS: TEXT, ...}` (for single-head rules) or a list of `{"key": ..., "when": CLASS |
-      {HEAD: CLASS, ...}, "text": ...}`. With PREV_DIR (pass `-` or `none` when omitted before PREFIX_MODE), entries whose key and
-      `prefix_ids` are unchanged for the same model fingerprint and prefix mode are copied without recomputing. PREFIX_MODE is `system`
+      {HEAD: CLASS, ...}, "text": ...}`. With PREV_DIR (pass `-` or `none` when omitted), entries whose key and
+      `prefix_ids` are unchanged for the same model fingerprint, prefix mode, and storage mode are copied without recomputing. PREFIX_MODE is `system`
       (default: system turn before user turn), `prefix-turn` (synthetic leading user/assistant exchange), or `auto` (`system` then
-      `prefix-turn`). Compiles into a staging folder and renames atomically, so a failed run leaves no partial OUT_DIR. Use from
-      `kestrom generate --rules` via a `kv: BANK_DIR [MAX_MATCH]` line.
-  kestrom kv chat MODEL BANK_DIR [MAX_TOKENS] [MAX_MATCH] [TURNS.json] [OUT.jsonl] [PROBES.dsl]
+      `prefix-turn`). STORAGE is `eager` (default: uncompressed BF16/FP16 `.safetensors`), `q8` (8-bit quantized `.safetensors`),
+      `q4` (4-bit quantized `.safetensors`), or `lazy` (tokenizer-only compile storing `prefix_ids` without pre-saving `.safetensors`;
+      prefills on demand at runtime with an in-memory LRU cache). Compiles into a staging folder and renames atomically, so a
+      failed run leaves no partial OUT_DIR. Use from `kestrom generate --rules` via a `kv: BANK_DIR [MAX_MATCH]` line.
+  kestrom kv chat MODEL BANK_DIR [MAX_TOKENS] [MAX_MATCH] [TURNS.json] [OUT.jsonl] [PROBES_OR_ROUTER]
       multi-turn chat session using a compiled KV bank. Every turn evaluates the full turn history (`steps`) through the bank's
       rules so `prev` lines and registers resolve follow-ups without extra model calls. When matched keys are unchanged and the chat
       template extends the cached tokens as a prefix, the live KV cache is reused incrementally (zero re-prefill of earlier turns); on
       topic switches it swaps in the new cache and re-prefills the conversation; when multiple entries match (up to MAX_MATCH, 3 unless
-      given), they are composed via the in-memory LRU cache. With TURNS.json (`["turn1", ...]` or `[{"user": ..., "values": ..., "data": ..., "reset": ...}]`; pass `-` or `none` when passing PROBES.dsl interactively),
+      given), they are composed via the in-memory LRU cache. With TURNS.json (`["turn1", ...]` or `[{"user": ..., "values": ..., "data": ..., "reset": ...}]`; pass `-` or `none` when passing PROBES_OR_ROUTER interactively),
       writes one JSONL row per turn to OUT.jsonl; without TURNS.json, runs an interactive session (/reset, /status, /quit).
-      With PROBES.dsl (a rules file containing `in NAME: prompt FILE LAYER` lines, e.g. from `kestrom bridge map`), each user turn
+      With a `.dsl` PROBES_OR_ROUTER file containing `in NAME: prompt FILE LAYER` lines (e.g. from `kestrom bridge map`), each user turn
       evaluates those prompt conditions on the raw turn before matching and passes them as 0/1 `values` to the bank's rules (the turn's
-      own `values` win).
+      own `values` win). With a `.npz` PROBES_OR_ROUTER file (from `kestrom kv fit-router`), routes each turn in one forward pass
+      before deciding whether to inject a cache.
+  kestrom kv fit-router MODEL DATA.json OUT.npz [LAYER] [ALPHA]
+      fit a 1-forward O(K) scale-normalized dual-Ridge semantic router (`spec`, `single`, and K-class head) from example prompts
+      with optional neutral (`outside`) and multi-topic (`ambiguous`) rejections, for use with `kestrom kv chat` or `kestrom kv multihop`.
+  kestrom kv ingest MODEL CORPUS_PATH OUT_DIR [PREV_DIR] [MODE]
+      automatically extract entity/alias triggers and optional key facts from unstructured JSON/JSONL/text documents (MODE:
+      `key-facts` [default], `entities`, `atomic`, or zero-LLM `fast`), emit two-tier `hop_expand` `rules.dsl`, `facts.json`,
+      and `index.json` (inverted triggers + Okapi BM25), reuse unchanged documents when PREV_DIR is given, and verify zero matches on
+      built-in outside prompts.
+  kestrom kv multihop MODEL BANK_DIR PROMPTS.json OUT.jsonl [MAX_TOKENS] [MAX_HOPS] [MAX_ACTIVE] [ROUTER.npz] [INDEX.json] [PROBE_MODE]
+      iterative cross-document KV chaining over a compiled KV bank: unmatched prompts run unchanged through plain greedy decoding
+      (`events=[]`, bit-identical to MODEL); matched prompts iteratively check sufficiency (using `structured` 3-line
+      `Facts -> Answer -> Status` or `fact-first` bulleted probes) and chain newly revealed entries up to MAX_HOPS before decoding
+      the final answer without inserting document text into the prompt. Check batch outputs with `kestrom-verify compare events`.
   kestrom kv from-table TABLE_FILE OUT_DIR
       generate `rules.dsl`, `facts.json`, `generate.dsl`, `regression.json`, and deterministic `from_table_report.json` from a CSV,
       TSV, YAML (requires PyYAML, a list or `{"rows": [...]}` / `{"entries": [...]}`), JSON (a list, or `{"rows": [...]}` /
@@ -36,7 +52,7 @@ When a rules file combines `kv:` with `in NAME: prompt FILE LAYER` conditions, `
       string split on `;` (on `|` when it has no `;`), gathered from all rows (default: four built-in English and Japanese prompts).
       `generate.dsl` holds `kv: bank 3`, a path relative to the working directory: compile the bank into `bank` there
       (`kestrom kv compile MODEL OUT_DIR/rules.dsl OUT_DIR/facts.json bank`), or edit the line.
-  kestrom kv verify-chat MODEL BANK_DIR TURNS.json REPORT.json [MAX_TOKENS] [MAX_MATCH] [PROBES.dsl]
+  kestrom kv verify-chat MODEL BANK_DIR TURNS.json REPORT.json [MAX_TOKENS] [MAX_MATCH] [PROBES_OR_ROUTER]
       mechanically check multi-turn non-interference for `kestrom kv chat`: runs TURNS.json through `KVSession`, re-runs plain greedy
       decoding twice on every turn where `kv` is `null` using identical prompt ids, and writes REPORT.json checking determinism (U0) and
       exact bit-identity (`events=[]` and matching tokens/finish, G2) on all `kv=null` turns (exits 1 on FAIL or zero `kv=null` turns).
@@ -59,6 +75,9 @@ from . import rules
 FORMAT = "kestrom-kv-v2"
 PROBES = ("Hello.", "12345.")
 PREFIX_MODES = ("system", "prefix-turn", "auto")
+STORAGE_MODES = ("eager", "q8", "q4", "lazy")
+QUANT_GROUP_SIZE = 64
+QUANT_META_KEY = "kestrom_kv_quant"
 META_FILES = ("config.json", "tokenizer_config.json", "tokenizer.json", "chat_template.jinja", "model.safetensors.index.json")
 DEFAULT_OUTSIDE_PROMPTS = (
     "Compute 17 + 28.",
@@ -293,12 +312,55 @@ def prefill_prefix(model, prefix_ids: list[int]):
     return cache
 
 
-def compile_prefix(model, prefix_ids: list[int], out_file: Path, key: str):
+def _save_quantized_cache(out_file: Path, cache, metadata: dict, bits: int, group_size: int = QUANT_GROUP_SIZE):
+    """Save a prompt cache with group-wise quantized 2D+ float arrays (including RotatingKVCache / ArraysCache)."""
+    import mlx.core as mx
+    from mlx.utils import tree_flatten
+
+    scalars = [""]
+    arrays = {}
+    dtypes = {}
+    quant_dtypes = {mx.float16: "float16", mx.bfloat16: "bfloat16", mx.float32: "float32"}
+
+    for k, v in tree_flatten([c.state for c in cache]):
+        if isinstance(v, mx.array):
+            if v.dtype in quant_dtypes and v.ndim >= 2 and v.shape[-1] >= group_size and v.shape[-1] % group_size == 0:
+                w, scales, biases = mx.quantize(v, group_size=group_size, bits=bits)
+                arrays[k] = w
+                arrays[f"__q__.{k}.scales"] = scales
+                arrays[f"__q__.{k}.biases"] = biases
+                dtypes[k] = quant_dtypes[v.dtype]
+            else:
+                arrays[k] = v
+        elif isinstance(v, (int, float, bool)):
+            scalars.append((k, "scalar"))
+            arrays[k] = mx.array(v)
+        elif isinstance(v, str):
+            scalars.append((k, "string"))
+            arrays[k] = mx.array([ord(ch) for ch in v])
+        elif v is None:
+            scalars.append((k, "none"))
+            arrays[k] = mx.array([])
+        else:
+            raise ValueError(f"Model state is not serializable: {v}")
+
+    classes = [type(c).__name__ for c in cache]
+    meta = dict(metadata or {})
+    meta[QUANT_META_KEY] = json.dumps({"bits": int(bits), "group_size": int(group_size), "dtypes": dtypes}, sort_keys=True)
+    flat_meta = dict(tree_flatten([meta, classes, scalars]))
+    mx.save_safetensors(str(out_file), arrays, flat_meta)
+
+
+def compile_prefix(model, prefix_ids: list[int], out_file: Path, key: str, storage: str = "eager"):
     """Prefill prefix_ids into a fresh prompt cache and save it as a safetensors cache file."""
     from mlx_lm.models.cache import save_prompt_cache
 
     cache = prefill_prefix(model, prefix_ids)
-    save_prompt_cache(str(out_file), cache, metadata={"kestrom_kv_key": key, "prefix_len": str(len(prefix_ids))})
+    meta = {"kestrom_kv_key": key, "prefix_len": str(len(prefix_ids))}
+    if storage in ("q8", "q4"):
+        _save_quantized_cache(out_file, cache, meta, bits=8 if storage == "q8" else 4)
+        return
+    save_prompt_cache(str(out_file), cache, metadata=meta)
 
 
 def _clone_tree(x):
@@ -322,7 +384,7 @@ def clone_cache(cache):
 
 
 class ComposeCache:
-    """In-memory LRU cache for multi-entry composed prefix KV caches."""
+    """In-memory LRU cache for multi-entry composed prefix KV caches and lazy single-entry caches."""
 
     def __init__(self, maxsize: int = 16):
         self.maxsize = max(0, int(maxsize))
@@ -331,8 +393,8 @@ class ComposeCache:
         self.misses = 0
 
     def get_or_build(self, model, tok, bank: dict, hits: list[dict]):
-        """Return a fresh prompt cache for hits (loading 1-hit from disk or composing >=2 hits via LRU)."""
-        if len(hits) == 1:
+        """Return a fresh prompt cache for hits (loading 1-hit from disk, prefilling lazy 1-hit, or composing >=2 hits via LRU)."""
+        if len(hits) == 1 and hits[0].get("file") is not None:
             return load_cache_file(str(Path(bank["dir"]) / hits[0]["file"]))
         combo_key = tuple(e["key"] for e in hits)
         if combo_key in self._cache:
@@ -340,10 +402,13 @@ class ComposeCache:
             self.hits += 1
             return clone_cache(self._cache[combo_key])
         self.misses += 1
-        combined_text = "\n\n".join(e["text"] for e in hits)
-        sp, pfx = prefix_boundary(tok, combined_text, mode=bank.get("prefix_mode", "system"))
-        if sp != bank["strip_prefix"]:
-            raise SystemExit(f"composed prefix strip_prefix {sp} differs from bank strip_prefix {bank['strip_prefix']}")
+        if len(hits) == 1 and isinstance(hits[0].get("prefix_ids"), list) and hits[0]["prefix_ids"]:
+            pfx = [int(t) for t in hits[0]["prefix_ids"]]
+        else:
+            combined_text = "\n\n".join(e["text"] for e in hits)
+            sp, pfx = prefix_boundary(tok, combined_text, mode=bank.get("prefix_mode", "system"))
+            if sp != bank["strip_prefix"]:
+                raise SystemExit(f"composed prefix strip_prefix {sp} differs from bank strip_prefix {bank['strip_prefix']}")
         snap = prefill_prefix(model, pfx)
         if self.maxsize > 0:
             self._cache[combo_key] = snap
@@ -352,12 +417,28 @@ class ComposeCache:
         return clone_cache(snap)
 
 
-def compile(model_dir, rules_file, facts_file, out_dir, prev_dir=None, prefix_mode="system"):
+def _extract_prefix_fast(tok, fact_text: str, mode: str, strip_prefix: list[int], u0: list[int]) -> list[int]:
+    """Extract prefix_ids for fact_text matching `strip_prefix` and probe `PROBES[0]`, falling back to full verification."""
+    s0 = _chat_ids(tok, PROBES[0], fact_text, mode=mode)
+    k = len(strip_prefix)
+    tail = len(u0) - k
+    if len(s0) > len(u0) and s0[:k] == strip_prefix and u0[:k] == strip_prefix and s0[len(s0) - tail:] == u0[k:]:
+        return s0[:len(s0) - tail]
+    sp, pfx = prefix_boundary(tok, fact_text, mode=mode)
+    if sp != strip_prefix:
+        raise SystemExit(f"strip_prefix {sp} differs from {strip_prefix}")
+    return pfx
+
+
+def compile(model_dir, rules_file, facts_file, out_dir, prev_dir=None, prefix_mode="system", storage="eager"):
     """Compile RULES.dsl and FACTS.json into a deterministic KV bank in OUT_DIR."""
     prev_dir = _opt_arg(prev_dir)
     prefix_mode = (prefix_mode or "system").strip()
     if prefix_mode not in PREFIX_MODES:
         raise SystemExit(f"unsupported PREFIX_MODE {prefix_mode!r} (expected one of {', '.join(PREFIX_MODES)})")
+    storage = (storage or "eager").strip().lower()
+    if storage not in STORAGE_MODES:
+        raise SystemExit(f"unsupported STORAGE {storage!r} (expected one of {', '.join(STORAGE_MODES)})")
     R = rules.standalone(rules_file)
     facts = parse_facts(report.read(facts_file), R)
     out_path = Path(out_dir)
@@ -368,7 +449,8 @@ def compile(model_dir, rules_file, facts_file, out_dir, prev_dir=None, prefix_mo
 
     prev_by_prefix = {}
     prev_mode = "system"
-    if prev_dir:
+    prev_storage = "eager"
+    if prev_dir and storage != "lazy":
         prev_path = Path(prev_dir)
         manifest_path = prev_path / "manifest.json"
         if not manifest_path.is_file():
@@ -379,23 +461,32 @@ def compile(model_dir, rules_file, facts_file, out_dir, prev_dir=None, prefix_mo
         if pm.get("fingerprint") != fp:
             raise SystemExit(f"{prev_dir}: model fingerprint differs from {model_dir}")
         prev_mode = pm.get("prefix_mode", "system")
-        for e in pm.get("entries", []):
-            prev_by_prefix[(e["key"], tuple(e["prefix_ids"]))] = (prev_path / e["file"], e["cache_sha256"])
+        prev_storage = pm.get("storage", "eager")
+        if prev_storage == storage:
+            for e in pm.get("entries", []):
+                if e.get("file") is not None:
+                    prev_by_prefix[(e["key"], tuple(e["prefix_ids"]))] = (prev_path / e["file"], e["cache_sha256"])
 
-    from mlx_lm import load
+    if storage == "lazy":
+        from transformers import AutoTokenizer
 
-    model, tok = load(str(model_dir))
+        model, tok = None, AutoTokenizer.from_pretrained(str(model_dir))
+    else:
+        from mlx_lm import load
+
+        model, tok = load(str(model_dir))
+
     strip_prefix = None
     resolved_mode = None
+    u0 = None
     tokenized = []
     for entry in facts:
         if resolved_mode is None:
             sp, pfx, resolved_mode = resolve_prefix_boundary(tok, entry["text"], mode=prefix_mode)
             strip_prefix = sp
+            u0 = _chat_ids(tok, PROBES[0], None, mode=resolved_mode)
         else:
-            sp, pfx = prefix_boundary(tok, entry["text"], mode=resolved_mode)
-            if sp != strip_prefix:
-                raise SystemExit(f"entry {entry['key']!r}: strip_prefix {sp} differs from {strip_prefix}")
+            pfx = _extract_prefix_fast(tok, entry["text"], resolved_mode, strip_prefix, u0)
         tokenized.append((entry, pfx))
     if prev_dir and resolved_mode != prev_mode:
         prev_by_prefix.clear()
@@ -407,6 +498,18 @@ def compile(model_dir, rules_file, facts_file, out_dir, prev_dir=None, prefix_mo
 
         compiled, reused, manifest_entries = 0, 0, []
         for entry, pfx in tokenized:
+            if storage == "lazy":
+                manifest_entries.append({
+                    "key": entry["key"],
+                    "when": entry["when"],
+                    "text": entry["text"],
+                    "text_sha256": sha256_bytes(entry["text"].encode("utf-8")),
+                    "prefix_ids": pfx,
+                    "file": None,
+                    "cache_sha256": None,
+                    "nbytes": 0,
+                })
+                continue
             fname = entry_filename(entry["key"])
             dst = tmp_path / fname
             pkey = (entry["key"], tuple(pfx))
@@ -416,7 +519,10 @@ def compile(model_dir, rules_file, facts_file, out_dir, prev_dir=None, prefix_mo
                 shutil.copyfile(src, dst)
                 reused += 1
             else:
-                compile_prefix(model, pfx, dst, entry["key"])
+                if storage == "eager":
+                    compile_prefix(model, pfx, dst, entry["key"])
+                else:
+                    compile_prefix(model, pfx, dst, entry["key"], storage=storage)
                 compiled += 1
             manifest_entries.append({
                 "key": entry["key"],
@@ -433,6 +539,7 @@ def compile(model_dir, rules_file, facts_file, out_dir, prev_dir=None, prefix_mo
             "format": FORMAT,
             "fingerprint": fp,
             "prefix_mode": resolved_mode or "system",
+            "storage": storage,
             "rules_sha256": sha256_file(tmp_path / "rules.dsl"),
             "strip_prefix": strip_prefix or [],
             "entries": manifest_entries,
@@ -466,13 +573,26 @@ def load_bank(bank_dir, tok=None) -> dict:
         raise SystemExit(f"{bank_dir}: unsupported KV bank format {m.get('format')!r}")
     check_file(rpath, m.get("rules_sha256"), bank_dir)
     R = rules.standalone(str(rpath))
+    storage = m.get("storage", "eager")
     entries = m.get("entries", [])
     for e in entries:
-        check_file(bpath / e["file"], e.get("cache_sha256"), bank_dir)
+        if e.get("file") is None:
+            if storage != "lazy" or not isinstance(e.get("prefix_ids"), list) or not e.get("prefix_ids"):
+                raise SystemExit(f"{bank_dir}: entry {e.get('key')!r} missing cache file")
+        else:
+            check_file(bpath / e["file"], e.get("cache_sha256"), bank_dir)
     sp = m.get("strip_prefix", [])
     if tok is not None and len(sp) == 1 and getattr(tok, "bos_token_id", None) is not None and sp[0] != tok.bos_token_id:
         raise SystemExit(f"{bank_dir}: bank strip_prefix {sp} does not match tokenizer bos_token_id {tok.bos_token_id}")
-    return {"dir": str(bpath), "rules": R, "entries": entries, "strip_prefix": sp, "prefix_mode": m.get("prefix_mode", "system"), "fingerprint": m.get("fingerprint", {})}
+    return {
+        "dir": str(bpath),
+        "rules": R,
+        "entries": entries,
+        "strip_prefix": sp,
+        "prefix_mode": m.get("prefix_mode", "system"),
+        "storage": storage,
+        "fingerprint": m.get("fingerprint", {}),
+    }
 
 
 def match_entries(bank: dict, data: dict, max_match: int = 1) -> list[dict]:
@@ -497,10 +617,42 @@ def format_kv_key(hits: list[dict]):
 
 
 def load_cache_file(path: str):
-    """Load a compiled prompt cache from a `.safetensors` file."""
-    from mlx_lm.models.cache import load_prompt_cache
+    """Load a compiled prompt cache (`eager`, `q8`, or `q4`) from a `.safetensors` file."""
+    import mlx.core as mx
+    from mlx.utils import tree_unflatten
+    from mlx_lm.models import cache as mlx_cache
 
-    return load_prompt_cache(str(path))
+    arrays, raw_meta = mx.load(str(path), return_metadata=True)
+    metadata, classes, scalars = tree_unflatten(list(raw_meta.items()))
+    qspec = json.loads(metadata[QUANT_META_KEY]) if isinstance(metadata, dict) and QUANT_META_KEY in metadata else None
+    if qspec is not None:
+        bits = int(qspec["bits"])
+        group_size = int(qspec["group_size"])
+        dtype_map = {"float16": mx.float16, "bfloat16": mx.bfloat16, "float32": mx.float32}
+        for k, dt_name in qspec.get("dtypes", {}).items():
+            w = arrays.pop(k)
+            scales = arrays.pop(f"__q__.{k}.scales")
+            biases = arrays.pop(f"__q__.{k}.biases")
+            arrays[k] = mx.dequantize(
+                w, scales, biases, group_size=group_size, bits=bits, dtype=dtype_map[dt_name]
+            )
+
+    for pos, kind in scalars[1:]:
+        arr = arrays[pos]
+        if kind == "scalar":
+            arrays[pos] = arr.item()
+        elif kind == "string":
+            arrays[pos] = "".join(chr(i) for i in arr.tolist())
+        elif kind == "none":
+            arrays[pos] = None
+        else:
+            raise ValueError(f"[load_cache_file] Unknown type {kind}")
+
+    state_tree = tree_unflatten(list(arrays.items()))
+    cache = [getattr(mlx_cache, cls_name).from_state(st) for cls_name, st in zip(classes, state_tree)]
+    if qspec is not None:
+        mx.eval([c.state for c in cache])
+    return cache
 
 
 def _mlx_decode(model, tok, feed_ids: list[int], max_tokens: int, prompt_cache) -> tuple[list[int], str, list[int]]:
@@ -536,6 +688,16 @@ def load_prompt_probes(probes_file: str) -> dict:
     return {name: (loaded[path], layer) for name, (_, path, layer) in R["declared"].items()}
 
 
+def _load_probes_or_router(probes_file: str | None, model_dir=None):
+    if probes_file is None:
+        return None, None
+    if str(probes_file).lower().endswith(".npz"):
+        from . import kv_multihop
+
+        return None, kv_multihop.load_router(probes_file, model_dir)
+    return load_prompt_probes(probes_file), None
+
+
 class KVSession:
     """Multi-turn session with stateful `steps`/`prev` rule evaluation, incremental cache reuse, and multi-entry composition."""
 
@@ -552,10 +714,13 @@ class KVSession:
         make_cache_fn=None,
         prompt_probes: dict | None = None,
         probe_fn=None,
+        ridge_router: dict | None = None,
+        route_fn=None,
     ):
         self.model = model
         self.tok = tok
         self.bank = bank
+        self.entry_by_key = {e["key"]: e for e in self.bank["entries"]}
         self.max_tokens = int(max_tokens)
         self.max_match = int(max_match)
         self.compose_cache = compose_cache if compose_cache is not None else ComposeCache()
@@ -574,6 +739,14 @@ class KVSession:
             self._probe = lambda ids, npz, layer: steer.fires(self.model, ids, npz, layer)
         else:
             self._probe = None
+        self.ridge_router = ridge_router
+        if route_fn is not None:
+            self._route = route_fn
+        elif self.ridge_router is not None:
+            from . import kv_multihop
+            self._route = lambda ids: kv_multihop.route_prompt(self.model, ids, self.ridge_router)
+        else:
+            self._route = None
         self.messages: list[dict] = []
         self.steps: list[dict] = []
         self.active_keys: tuple[str, ...] | None = None
@@ -596,12 +769,22 @@ class KVSession:
         if values is not None:
             step["values"] = values
         probe_vals = None
-        if self.prompt_probes:
+        route_diag = None
+        if self._route is not None and self.ridge_router is not None:
             turn_ids = _chat_messages_ids(self.tok, [{"role": "user", "content": user_text}], enable_thinking=self.enable_thinking)
-            probe_vals = {name: int(bool(self._probe(turn_ids, npz, layer))) for name, (npz, layer) in self.prompt_probes.items()}
-            step = rules.with_prompt_values(step, probe_vals)
-        self.steps.append(step)
-        hits = match_entries(self.bank, {"steps": list(self.steps)}, self.max_match)
+            routed_key, route_diag = self._route(turn_ids)
+            self.steps.append(step)
+            if routed_key is not None and routed_key in self.entry_by_key:
+                hits = [self.entry_by_key[routed_key]]
+            else:
+                hits = []
+        else:
+            if self.prompt_probes:
+                turn_ids = _chat_messages_ids(self.tok, [{"role": "user", "content": user_text}], enable_thinking=self.enable_thinking)
+                probe_vals = {name: int(bool(self._probe(turn_ids, npz, layer))) for name, (npz, layer) in self.prompt_probes.items()}
+                step = rules.with_prompt_values(step, probe_vals)
+            self.steps.append(step)
+            hits = match_entries(self.bank, {"steps": list(self.steps)}, self.max_match)
         self.messages.append({"role": "user", "content": user_text})
         full_ids = _chat_messages_ids(self.tok, self.messages, enable_thinking=self.enable_thinking)
         self.last_prompt_ids = list(full_ids)
@@ -656,6 +839,8 @@ class KVSession:
         }
         if probe_vals is not None:
             out["probes"] = probe_vals
+        if route_diag is not None:
+            out["router"] = route_diag
         return out
 
 
@@ -687,8 +872,8 @@ def chat(model_dir, bank_dir, max_tokens=report.MAX_TOKENS, max_match=3, turns_f
     max_tokens, max_match = _limits(max_tokens, max_match)
     turns_file, out_file, probes_file = _opt_arg(turns_file), _opt_arg(out_file), _opt_arg(probes_file)
     if (turns_file is None) != (out_file is None):
-        raise SystemExit("give TURNS.json and OUT.jsonl together, or neither (use '-' for both when passing PROBES.dsl interactively)")
-    prompt_probes = load_prompt_probes(probes_file) if probes_file is not None else None
+        raise SystemExit("give TURNS.json and OUT.jsonl together, or neither (use '-' for both when passing PROBES_OR_ROUTER interactively)")
+    prompt_probes, ridge_router = _load_probes_or_router(probes_file, model_dir)
     check_model(load_bank(bank_dir), model_dir)
     turns = report.read(turns_file) if turns_file is not None else None
 
@@ -696,7 +881,9 @@ def chat(model_dir, bank_dir, max_tokens=report.MAX_TOKENS, max_match=3, turns_f
 
     model, tok = load(str(model_dir))
     bank = load_bank(bank_dir, tok)
-    session = KVSession(model, tok, bank, max_tokens=max_tokens, max_match=max_match, prompt_probes=prompt_probes)
+    session = KVSession(
+        model, tok, bank, max_tokens=max_tokens, max_match=max_match, prompt_probes=prompt_probes, ridge_router=ridge_router
+    )
 
     if turns is not None:
         f = open(out_file, "w", encoding="utf-8")  # one line per turn as it is done (a long run keeps what it finished)
@@ -1017,6 +1204,8 @@ def verify_chat_session(
     decode_fn=None,
     make_cache_fn=None,
     probe_fn=None,
+    ridge_router: dict | None = None,
+    route_fn=None,
 ) -> dict:
     """Mechanically check that every `kv=None` turn in `turns` matches twice-run plain decoding bit for bit."""
     session = KVSession(
@@ -1030,6 +1219,8 @@ def verify_chat_session(
         make_cache_fn=make_cache_fn,
         prompt_probes=prompt_probes,
         probe_fn=probe_fn,
+        ridge_router=ridge_router,
+        route_fn=route_fn,
     )
     rows = []
     history_pure = True
@@ -1098,7 +1289,7 @@ def verify_chat(model_dir, bank_dir, turns_file, out_report, max_tokens=report.M
     """CLI handler: verify non-interference (`U0` and `G2`) of all `kv=None` turns in `kestrom kv chat`."""
     max_tokens, max_match = _limits(max_tokens, max_match)
     probes_file = _opt_arg(probes_file)
-    prompt_probes = load_prompt_probes(probes_file) if probes_file is not None else None
+    prompt_probes, ridge_router = _load_probes_or_router(probes_file, model_dir)
     bpath = Path(bank_dir)
     bank_meta = load_bank(bank_dir)
     check_model(bank_meta, model_dir)
@@ -1110,7 +1301,16 @@ def verify_chat(model_dir, bank_dir, turns_file, out_report, max_tokens=report.M
 
     model, tok = load(str(model_dir))
     bank = load_bank(bank_dir, tok)
-    res = verify_chat_session(model, tok, bank, turns, max_tokens=max_tokens, max_match=max_match, prompt_probes=prompt_probes)
+    res = verify_chat_session(
+        model,
+        tok,
+        bank,
+        turns,
+        max_tokens=max_tokens,
+        max_match=max_match,
+        prompt_probes=prompt_probes,
+        ridge_router=ridge_router,
+    )
 
     settings = {
         "max_tokens": max_tokens,
