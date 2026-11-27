@@ -10,7 +10,7 @@ When a rules file combines `kv:` with `in NAME: prompt FILE LAYER` conditions, `
   kestrom kv compile MODEL RULES.dsl FACTS.json OUT_DIR [PREV_DIR] [PREFIX_MODE] [STORAGE]
       compile one prefix KV entry per fact in FACTS.json into OUT_DIR, together with `rules.dsl` and
       `manifest.json`. FACTS.json is either `{CLASS: TEXT, ...}` (for single-head rules) or a list of `{"key": ..., "when": CLASS |
-      {HEAD: CLASS, ...}, "text": ...}`. With PREV_DIR (pass `-` or `none` when omitted), entries whose key and
+      {HEAD: CLASS, ...}, "text": ...}`. `-` or `none` stands for an omitted PREV_DIR, PREFIX_MODE or STORAGE. With PREV_DIR, entries whose key and
       `prefix_ids` are unchanged for the same model fingerprint, prefix mode, and storage mode are copied without recomputing. PREFIX_MODE is `system`
       (default: system turn before user turn), `prefix-turn` (synthetic leading user/assistant exchange), or `auto` (`system` then
       `prefix-turn`). STORAGE is `eager` (default: uncompressed BF16/FP16 `.safetensors`), `q8` (8-bit quantized `.safetensors`),
@@ -33,9 +33,11 @@ When a rules file combines `kv:` with `in NAME: prompt FILE LAYER` conditions, `
       with optional neutral (`outside`) and multi-topic (`ambiguous`) rejections, for use with `kestrom kv chat` or `kestrom kv multihop`.
   kestrom kv ingest MODEL CORPUS_PATH OUT_DIR [PREV_DIR] [MODE]
       automatically extract entity/alias triggers and optional key facts from unstructured JSON/JSONL/text documents (MODE:
-      `key-facts` [default], `entities`, `atomic`, or zero-LLM `fast`), emit two-tier `hop_expand` `rules.dsl`, `facts.json`,
-      and `index.json` (inverted triggers + Okapi BM25), reuse unchanged documents when PREV_DIR is given, and verify zero matches on
-      built-in outside prompts.
+      `key-facts` [default], `entities`, `atomic`, or zero-LLM `fast`), emit two-tier `hop_expand` `rules.dsl` (units named by the
+      document's position, `d0`, `d1`, ...; `hop_expand` is a register that reads 0 unless a step's `values` give it, so `kv chat`
+      and `generate` see the first tier only), `facts.json` (keyed by doc_id), and `index.json` (inverted triggers + Okapi BM25),
+      reuse unchanged documents when PREV_DIR is given (same MODE and, except for `fast`, the same model fingerprint), and verify
+      zero matches on built-in outside prompts.
   kestrom kv multihop MODEL BANK_DIR PROMPTS.json OUT.jsonl [MAX_TOKENS] [MAX_HOPS] [MAX_ACTIVE] [ROUTER.npz] [INDEX.json] [PROBE_MODE]
       iterative cross-document KV chaining over a compiled KV bank: unmatched prompts run unchanged through plain greedy decoding
       (`events=[]`, bit-identical to MODEL); matched prompts iteratively check sufficiency (using `structured` 3-line
@@ -417,13 +419,20 @@ class ComposeCache:
         return clone_cache(snap)
 
 
-def _extract_prefix_fast(tok, fact_text: str, mode: str, strip_prefix: list[int], u0: list[int]) -> list[int]:
-    """Extract prefix_ids for fact_text matching `strip_prefix` and probe `PROBES[0]`, falling back to full verification."""
-    s0 = _chat_ids(tok, PROBES[0], fact_text, mode=mode)
+def _extract_prefix_fast(tok, fact_text: str, mode: str, strip_prefix: list[int], us: list[list[int]]) -> list[int]:
+    """Extract prefix_ids for fact_text matching `strip_prefix` on every probe turn of `PROBES` (us: their ids with no fact),
+    with the same prefix on each, falling back to full verification."""
     k = len(strip_prefix)
-    tail = len(u0) - k
-    if len(s0) > len(u0) and s0[:k] == strip_prefix and u0[:k] == strip_prefix and s0[len(s0) - tail:] == u0[k:]:
-        return s0[:len(s0) - tail]
+    found = set()
+    for probe, u in zip(PROBES, us):
+        s = _chat_ids(tok, probe, fact_text, mode=mode)
+        tail = len(u) - k
+        if len(s) > len(u) and s[:k] == strip_prefix and u[:k] == strip_prefix and s[len(s) - tail:] == u[k:]:
+            found.add(tuple(s[:len(s) - tail]))
+        else:
+            found.add(None)
+    if len(found) == 1 and None not in found:
+        return list(found.pop())
     sp, pfx = prefix_boundary(tok, fact_text, mode=mode)
     if sp != strip_prefix:
         raise SystemExit(f"strip_prefix {sp} differs from {strip_prefix}")
@@ -433,10 +442,10 @@ def _extract_prefix_fast(tok, fact_text: str, mode: str, strip_prefix: list[int]
 def compile(model_dir, rules_file, facts_file, out_dir, prev_dir=None, prefix_mode="system", storage="eager"):
     """Compile RULES.dsl and FACTS.json into a deterministic KV bank in OUT_DIR."""
     prev_dir = _opt_arg(prev_dir)
-    prefix_mode = (prefix_mode or "system").strip()
+    prefix_mode = (_opt_arg(prefix_mode) or "system").strip()
     if prefix_mode not in PREFIX_MODES:
         raise SystemExit(f"unsupported PREFIX_MODE {prefix_mode!r} (expected one of {', '.join(PREFIX_MODES)})")
-    storage = (storage or "eager").strip().lower()
+    storage = (_opt_arg(storage) or "eager").strip().lower()
     if storage not in STORAGE_MODES:
         raise SystemExit(f"unsupported STORAGE {storage!r} (expected one of {', '.join(STORAGE_MODES)})")
     R = rules.standalone(rules_file)
@@ -478,15 +487,15 @@ def compile(model_dir, rules_file, facts_file, out_dir, prev_dir=None, prefix_mo
 
     strip_prefix = None
     resolved_mode = None
-    u0 = None
+    us = None
     tokenized = []
     for entry in facts:
         if resolved_mode is None:
             sp, pfx, resolved_mode = resolve_prefix_boundary(tok, entry["text"], mode=prefix_mode)
             strip_prefix = sp
-            u0 = _chat_ids(tok, PROBES[0], None, mode=resolved_mode)
+            us = [_chat_ids(tok, probe, None, mode=resolved_mode) for probe in PROBES]
         else:
-            pfx = _extract_prefix_fast(tok, entry["text"], resolved_mode, strip_prefix, u0)
+            pfx = _extract_prefix_fast(tok, entry["text"], resolved_mode, strip_prefix, us)
         tokenized.append((entry, pfx))
     if prev_dir and resolved_mode != prev_mode:
         prev_by_prefix.clear()

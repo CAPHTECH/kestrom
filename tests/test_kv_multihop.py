@@ -279,8 +279,54 @@ def test_ingest_incremental_and_1000_docs_scale(tmp_path):
     assert rep1k["verdict"] == "PASS" and rep1k["docs"] == 1000
 
 
+def test_fast_prefix_extraction_checks_every_probe_turn():
+    class SecondProbeMerges(MockChatTok):
+        def apply_chat_template(self, messages, **kw):
+            ids = super().apply_chat_template(messages, **kw)
+            if any(m["role"] == "system" and m["content"].endswith("Z") for m in messages) and any(
+                    m["role"] == "user" and m["content"] == kv.PROBES[1] for m in messages):
+                ids.remove(11)
+            return ids
+
+    tok = SecondProbeMerges(bos=2)
+    us = [kv._chat_ids(tok, p, None, mode="system") for p in kv.PROBES]
+    sp, _ = kv.prefix_boundary(tok, "first fact", mode="system")
+    assert kv._extract_prefix_fast(tok, "plain fact", "system", sp, us) == kv.prefix_boundary(tok, "plain fact")[1]
+    with pytest.raises(SystemExit, match="varies across probes"):
+        kv._extract_prefix_fast(tok, "fact Z", "system", sp, us)
+
+
+def test_ingest_rules_take_any_doc_id_read_without_values_and_bound_each_term(tmp_path):
+    corpus = [
+        {"doc_id": "2024-q3 report:a", "title": "東京タワー", "text": "東京タワー hosts Ann Vale in Kyoto."},
+        {"doc_id": "doc_b", "title": "Boreal Lab", "text": "Boreal Lab sits in Oslo."},
+    ]
+    c_path = tmp_path / "corpus.json"
+    c_path.write_text(json.dumps(corpus, ensure_ascii=False), encoding="utf-8")
+
+    def fake_extract(doc, mode):
+        ents = {"doc_b": ["Boreal Lab", "Oslo"]}.get(doc["doc_id"], ["東京タワー", "Ann Vale"])
+        return {"doc_id": doc["doc_id"], "raw_entities": ents, "raw_aliases": [], "raw_facts": [doc["text"]], "valid": True}
+
+    out = tmp_path / "ing"
+    assert kv_multihop.ingest("unused", str(c_path), str(out), mode="key-facts", extract_fn=fake_extract)["verdict"] == "PASS"
+    R = rules.standalone(str(out / "rules.dsl"))
+    keys = {f["key"] for f in report.read(str(out / "facts.json"))}
+    assert keys == {"2024-q3 report:a", "doc_b"}
+
+    def cls(text, values=None):
+        x = {"text": text, **({"values": values} if values else {})}
+        return next(rules.answers(R, [x]))[0]["class"]
+
+    # No values given (as kv chat and generate run): hop_expand reads 0, so the broad tier stays off.
+    assert cls("Where is Oslo?") == {"h_d0": None, "h_d1": None}
+    assert cls("Where is Oslo?", {"hop_expand": 1}) == {"h_d0": None, "h_d1": "hit"}
+    assert cls("Who is Ann Vale?")["h_d0"] == "hit"
+    # A non-ASCII term in the same document leaves the ASCII terms bounded, as the index bounds them.
+    assert cls("Ann Valerie wrote it.")["h_d0"] is None
+
+
 def test_multihop_early_stop_3hop_and_outside_bit_identical(tmp_path):
-    tok = MockChatTok(bos=2)
     dsl = tmp_path / "mh.dsl"
     dsl.write_text(
         'in m_p0: match "Alden Rook"\nh1 u_p0: any(m_p0)\nh2 v_p0: any(u_p0)\nout h_p0/hit: 1*v_p0\n'
