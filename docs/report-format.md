@@ -38,6 +38,16 @@ The verdict is computed from these keys (`kestrom_verify.report.verdict`), so `s
 | `reproduce` | `audit` | Shell commands to reproduce the underlying `kestrom-verify diff` and `kestrom inspect mirror` runs |
 | `limitations` | `audit` | Explicit tier scope statements (tier 2 `diff` does not bound outputs; tier 3 `mirror` is statistical evidence, not mathematical proof) |
 
+## Bridge diagnostic (`kestrom bridge diagnose ... OUT.json`)
+
+Written with `indent=1` and sorted keys, no times. It is a heuristic check, not a guarantee (`docs/guarantees.md`).
+
+| Key | Content |
+|---|---|
+| `status` | `"OK"` with no warnings, else `"WARN"` |
+| `layers` | One entry per mapped recipient layer: `donor_layer`, `recip_layer`, `dir_retention`, `cond_retention`, `threshold`; where the layer has a cond, `calib` (`n`, `score_mean`, `score_std`, `fire_rate`, `anchor_coverage`) over CALIB_PROMPTS, and with PROD_PROMPTS also `prod` (the same keys) and `shift` (`cohen_d`, 999.0 when unbounded; `std_ratio`, `fire_rate_shift`, `ks_stat`) |
+| `warnings` | The warnings the command printed |
+
 ## Operational KV reports (`kestrom kv from-table`, `verify-chat`, `check-template`, `ingest`)
 
 These commands write deterministic, timestamp-free JSON (`indent=1`, exit `1` on `FAIL` or incompatible templates):
