@@ -243,7 +243,7 @@ kestrom-verify summary diff.json
 ```
 
 `prompts.json` is `[{"id": ..., "ids": [prompt token ids]}, ...]`. See [docs/guarantees.md](docs/guarantees.md) for every command and
-check, and [examples/](examples/) for end-to-end runs (including [examples/procedural-kv](examples/procedural-kv/) for non-interfering procedural memory KV with 1-forward `O(K)` Ridge routing and `PREV_DIR` hot-patching: on `google/gemma-4-E4B-it`, 64/64 name-free procedural routing and accuracy, 0 negative transfer, 32/32 outside and 15/16 ambiguous bit-identical with U0/G2 112/112 PASS, and 20/20 revised switches via `PREV_DIR`). Two agent skills, [skills/kestrom](skills/kestrom/SKILL.md) (the commands, the
+check, and [examples/](examples/) for end-to-end runs (including [examples/wsp-verify-audit](examples/wsp-verify-audit/) for zero-download byte-reproducible verification and SARIF CI auditing of declared weight-space edits, and [examples/procedural-kv](examples/procedural-kv/) for non-interfering procedural memory KV with 1-forward `O(K)` Ridge routing and `PREV_DIR` hot-patching: on `google/gemma-4-E4B-it`, 64/64 name-free procedural routing and accuracy, 0 negative transfer, 32/32 outside and 15/16 ambiguous bit-identical with U0/G2 112/112 PASS, and 20/20 revised switches via `PREV_DIR`). Two agent skills, [skills/kestrom](skills/kestrom/SKILL.md) (the commands, the
 checks and what each tier lets you claim) and [skills/kestrom-acceptance](skills/kestrom-acceptance/SKILL.md) (acceptance inspection of a
 delivered fine-tune with `kestrom inspect`), restate these documents for an agent to follow.
 

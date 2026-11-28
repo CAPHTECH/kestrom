@@ -42,8 +42,25 @@ What is not in it:
 The commercial license is governed by the laws of Japan, and the Tokyo District Court has exclusive jurisdiction in the first
 instance over any dispute about it.
 
-Before you buy: `kestrom ifc`, `kestrom inspect mirror`/`disarm`, and `kestrom-verify` are tested on both Apple Silicon (MLX) and Linux/NVIDIA CUDA (`torch`) (`kestrom audit` invokes `diff` and `inspect mirror` and is unit-tested on Linux CI with NumPy `nf4`, not yet run end-to-end on CUDA); `kv`, `rules`, `bridge`, and `rows` are tested on Apple Silicon (MLX) only (`docs/guarantees.md`). Use
-the free trial to check it on your application: payments are not refunded.
+## Enterprise, Partner & OEM Agreements
+
+Use beyond standard self-serve internal CLI use is covered by a separate written agreement with CAPH TECH Inc.:
+
+- **Enterprise Production Runtime**: multi-node production runtime deployment, NDA and vendor security onboarding, custom
+  invoicing, and priority technical Q&A (reference range: 25,000–50,000 USD / year; optional scoped production PoC).
+- **SIer & Security Audit Partner License**: permission to run `kestrom` and `kestrom audit` on behalf of third-party clients and
+  deliver `audit.json`, `audit.html`, and `audit.sarif` acceptance artifacts as part of client engagements or CI gates.
+- **OEM / Platform SDK License**: embedding `kestrom inspect mirror` / `disarm`, container checks, or `kestrom ifc` inside
+  commercial AI security scanners, model registries, or inference platforms distributed to customers.
+
+Before you buy: `kestrom ifc`, `kestrom inspect mirror`/`disarm`, and `kestrom-verify` (including `kestrom-verify container` for
+GGUF and safetensors structural and metadata checks) are tested on both Apple Silicon (MLX) and Linux/NVIDIA CUDA (`torch`).
+`kestrom audit` supports standalone GGUF container inspection as well as safetensors folders; its full `container` + `diff` +
+`mirror` pipeline is unit-tested on Linux CI with NumPy `nf4` (not yet run end-to-end on CUDA). `kestrom bridge` supports `mlx`
+and `torch` (tested on Apple Silicon MLX, macOS MPS, and Linux NumPy CI unit tests, not yet run end-to-end on Linux/CUDA); `kv`,
+`rules`, and `rows` are tested on Apple Silicon (MLX) only (`docs/guarantees.md`). For pre-purchase technical scope questions,
+use [GitHub Discussions](https://github.com/CAPHTECH/kestrom/discussions). Use the free trial to check it on your application:
+payments are not refunded.
 
 ## How to buy
 
