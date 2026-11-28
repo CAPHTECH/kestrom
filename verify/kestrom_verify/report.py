@@ -112,10 +112,10 @@ def summary(path):
     parts = ("forced", "greedy", "weights", "measure", "measure greedy", "diff", "declared", "container")
     for key in parts:
         if key in r:
-            out += ["", f"## {key}", ""] + [f"- {k}: {len(v) if isinstance(v, list) else v}" for k, v in r[key].items()]
+            out += ["", f"## {key}", ""] + [f"- {k}: {len(v) if isinstance(v, list) or k == 'chat_templates' else v}" for k, v in r[key].items()]
     out += ["", "## Inputs", ""]
     for key, v in r.items():
-        if key not in parts + ("rows", "tensors"):
+        if key not in parts + ("rows", "tensors", "container_anomalies"):
             out += [f"- {key} / {k}: {x}" for k, x in v.items()] if isinstance(v, dict) else [f"- {key}: {v}"]
     return "\n".join(out) + "\n"
 

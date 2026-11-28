@@ -6,9 +6,11 @@ declared change and nothing else (sparse fine-tuning, a merged adapter, some lay
 Usage: kestrom-verify diff ORIGINAL EDITED REPORT.json [DECLARED.json]
   ORIGINAL, EDITED: a folder of safetensors (tensors paired by name across the shards) or one GGUF file.
   DECLARED: {"name": "all" | [[first row, end row], ...]}, a name a tensor or another file of the folder (config.json, ...) or
-  "__metadata__" (the safetensors metadata, or every key-value field of a GGUF file: tokenizer, special tokens, ...). D is PASS when
-  every changed row, tensor and file is inside it; a tensor added, removed or of another dtype or shape, a changed file and changed
-  metadata are inside only a declaration "all"."""
+  "__metadata__" (the safetensors metadata, or every key-value field of a GGUF file: tokenizer, special tokens, ...) or
+  "__container__" (the container anomalies of kestrom-verify container, when the edited model's differ from the original's). D is
+  PASS when every changed row, tensor and file is inside it; a tensor added, removed or of another dtype or shape, a changed file,
+  changed metadata and changed container anomalies are inside only a declaration "all". The report names the metadata keys added,
+  removed and changed (metadata_diff) and lists the edited model's container anomalies (container_anomalies)."""
 import hashlib
 import json
 import sys
@@ -124,9 +126,9 @@ def diff(original, edited, declared=None):
     if metadata(ma) != metadata(mb):
         others["__metadata__"] = "changed"
         meta_diff = metadata_diff(ma, mb)
-    edited_container = container.inspect(edited)
-    if edited_container["anomalies"]:
-        others["__container__"] = "anomaly"
+    anomalies = [container.inspect(p)["anomalies"] for p in (original, edited)]
+    if len({json.dumps([{k: v for k, v in x.items() if k != "file"} for x in a], sort_keys=True) for a in anomalies}) > 1:
+        others["__container__"] = "anomaly"  # the anomalies differ (the file names aside: two GGUF files pair whatever their names)
     totals = {"tensors": len(set(ta) | set(tb)), "tensors the same": len(set(ta) | set(tb)) - len(changed), "tensors changed": len(changed),
               "elements": sum(prod(t[4]) for t in ta.values()),
               "changed elements": sum(c.get("changed elements") or 0 for c in changed.values()),
@@ -135,8 +137,8 @@ def diff(original, edited, declared=None):
     out = {"original": named(fa, ha), "edited": named(fb, hb), "diff": totals, "tensors": changed, "files": others}
     if meta_diff is not None:
         out["metadata_diff"] = meta_diff
-    if edited_container["anomalies"]:
-        out["container_anomalies"] = edited_container["anomalies"]
+    if anomalies[1]:
+        out["container_anomalies"] = anomalies[1]
     if declared is not None:
         within = [n for n, c in changed.items() if n in declared and inside(c, declared[n])]
         within += [n for n in others if declared.get(n) == "all"]

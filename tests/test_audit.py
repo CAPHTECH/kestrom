@@ -280,3 +280,44 @@ def test_gguf_chat_template_poisoning_flagged_with_key_detail(tmp_path):
     assert "tokenizer.chat_template" in diff_chk["metadata_diff"]["changed"]
     sarif = json.loads((out_dir / "audit.sarif").read_text(encoding="utf-8"))
     assert "tokenizer.chat_template" in sarif["runs"][0]["results"][0]["message"]["text"]
+
+
+def test_layout_measures_from_the_furthest_end_and_scans_before_the_first_tensor():
+    import io
+    found = vc._layout(io.BytesIO(bytes(100)), "f", [(0, 100, "a"), (10, 20, "b"), (30, 40, "c")], 0, 100, 1)
+    assert [(x["kind"], x["between"]) for x in found] == [("overlap", ["a", "b"]), ("overlap", ["a", "c"])]
+    found = vc._layout(io.BytesIO(bytes(80)), "f", [(64, 80, "t")], 0, 80, 32)
+    assert [(x["kind"], x["between"], x["length"]) for x in found] == [("inter_tensor_gap", ["__header__", "t"], 64)]
+
+
+def test_diff_same_container_anomaly_on_both_sides_is_no_change(tmp_path):
+    w = {"layers.0.mlp.down_proj.weight": np.ones((4, 8), np.float32)}
+    a, b = folder(tmp_path / "a", w), folder(tmp_path / "b", w)
+    for m in (a, b):
+        with open(m / "model.safetensors", "ab") as fh:
+            fh.write(b"PAD!")
+    dres = vdiff.diff(a, b, {})
+    assert "__container__" not in dres["files"]
+    assert dres["declared"]["outside"] == []
+    assert dres["container_anomalies"][0]["kind"] == "trailing_bytes"
+
+
+def test_audit_container_json_is_the_container_report(tmp_path):
+    rng = np.random.default_rng(5)
+    model = folder(tmp_path / "model", {"layers.0.mlp.down_proj.weight": (rng.standard_normal((128, 256)) * 0.05).astype(np.float32)})
+    ka.audit(str(model), str(tmp_path / "out"), mode="nf4")
+    vc.main(str(model), str(tmp_path / "c.json"))
+    assert (tmp_path / "out" / "container.json").read_bytes() == (tmp_path / "c.json").read_bytes()
+
+
+def test_gguf_of_any_name_and_a_skipped_mirror_is_never_pass(tmp_path):
+    base = _write_gguf(tmp_path / "base.gguf", {"output.weight": np.arange(8, dtype=np.float32).reshape(2, 4)})
+    model = tmp_path / "model-q4"
+    model.write_bytes(base.read_bytes())
+    assert vc.inspect(model)["status"] == "PASS"
+    decl = tmp_path / "declared.json"
+    decl.write_text("{}", encoding="utf-8")
+    ka.audit(str(model), str(tmp_path / "out"), str(base), str(decl))
+    doc = json.loads((tmp_path / "out" / "audit.json").read_text(encoding="utf-8"))
+    assert [c["status"] for c in doc["checks"]] == ["PASS", "PASS", "SKIPPED"]
+    assert doc["verdict"] == "NO_FINDINGS"

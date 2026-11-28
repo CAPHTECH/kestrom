@@ -3,7 +3,7 @@ Detects unreferenced trailing bytes (e.g. appended payloads past the final tenso
 non-zero padding, overlapping or out-of-bounds tensor spans, and extracts chat_template metadata (length,
 SHA-256, full text) for human review. Does not classify natural-language prompt injections or malware families.
 Usage: kestrom-verify container MODEL REPORT.json
-  MODEL: a folder of safetensors or one GGUF file."""
+  MODEL: a folder of safetensors or one GGUF file (any file is read as GGUF, whatever its name)."""
 import hashlib
 import json
 import sys
@@ -47,6 +47,35 @@ def _template_entry(raw: bytes) -> dict[str, Any]:
     }
 
 
+def _layout(fh, fname: str, spans, data_start: int, file_size: int, alignment: int) -> list[dict[str, Any]]:
+    """The anomalies of one file whose tensors hold the sorted spans [(start, end, name)] of its data section from data_start: a span
+    past the end of the file, a span starting before the furthest end so far, and bytes no tensor holds (before the first span,
+    between two, after the last) that are not all zero or reach past the next multiple of alignment."""
+    anomalies: list[dict[str, Any]] = []
+    reached, last = data_start, "__header__"
+    for start, end, name in spans:
+        if end > file_size:
+            anomalies.append({"file": fname, "kind": "out_of_bounds", "tensor": name, "offset": start, "end": end, "file_size": file_size})
+        if start < reached:
+            anomalies.append({"file": fname, "kind": "overlap", "between": [last, name], "prev_end": reached, "next_start": start})
+        elif start > reached:
+            expected = _align_up(reached, alignment)
+            nz, digest, head_hex = _scan_region(fh, reached, min(start, file_size))
+            if start > expected or nz > 0:
+                anomalies.append({"file": fname, "kind": "inter_tensor_gap", "between": [last, name], "offset": reached,
+                                  "length": start - reached, "expected_offset": expected, "nonzero_bytes": nz, "sha256": digest,
+                                  "head_hex": head_hex})
+        if end > reached:
+            reached, last = end, name
+    if file_size > reached:
+        expected = _align_up(reached, alignment)
+        nz, digest, head_hex = _scan_region(fh, reached, file_size)
+        if file_size > expected or nz > 0:
+            anomalies.append({"file": fname, "kind": "trailing_bytes", "offset": reached, "length": file_size - reached,
+                              "expected_max_end": expected, "nonzero_bytes": nz, "sha256": digest, "head_hex": head_hex})
+    return anomalies
+
+
 def _gguf_alignment(reader) -> int:
     field = reader.fields.get("general.alignment")
     if field is None or not getattr(field, "data", None):
@@ -62,67 +91,9 @@ def _inspect_gguf(path: Path) -> dict[str, Any]:
     alignment = _gguf_alignment(reader)
     file_size = path.stat().st_size
     spans = sorted((int(t.data_offset), int(t.data_offset + t.n_bytes), t.name) for t in reader.tensors)
-    anomalies: list[dict[str, Any]] = []
-
-    if not spans:
-        anomalies.append({"file": path.name, "kind": "empty_tensors"})
-    else:
-        with open(path, "rb") as fh:
-            prev_end: int | None = None
-            prev_name: str | None = None
-            max_end = 0
-            for start, end, name in spans:
-                if end > file_size:
-                    anomalies.append({
-                        "file": path.name,
-                        "kind": "out_of_bounds",
-                        "tensor": name,
-                        "offset": start,
-                        "end": end,
-                        "file_size": file_size,
-                    })
-                if prev_end is not None:
-                    if prev_end > start:
-                        anomalies.append({
-                            "file": path.name,
-                            "kind": "overlap",
-                            "between": [prev_name, name],
-                            "prev_end": prev_end,
-                            "next_start": start,
-                        })
-                    elif start > prev_end:
-                        expected_start = _align_up(prev_end, alignment)
-                        nz, digest, head_hex = _scan_region(fh, prev_end, min(start, file_size))
-                        if start > expected_start or nz > 0:
-                            anomalies.append({
-                                "file": path.name,
-                                "kind": "inter_tensor_gap",
-                                "between": [prev_name, name],
-                                "offset": prev_end,
-                                "length": start - prev_end,
-                                "expected_offset": expected_start,
-                                "nonzero_bytes": nz,
-                                "sha256": digest,
-                                "head_hex": head_hex,
-                            })
-                if end > max_end:
-                    max_end = end
-                prev_end, prev_name = end, name
-
-            if file_size > max_end:
-                expected_end = _align_up(max_end, alignment)
-                nz, digest, head_hex = _scan_region(fh, max_end, file_size)
-                if file_size > expected_end or nz > 0:
-                    anomalies.append({
-                        "file": path.name,
-                        "kind": "trailing_bytes",
-                        "offset": max_end,
-                        "length": file_size - max_end,
-                        "expected_max_end": expected_end,
-                        "nonzero_bytes": nz,
-                        "sha256": digest,
-                        "head_hex": head_hex,
-                    })
+    anomalies: list[dict[str, Any]] = [] if spans else [{"file": path.name, "kind": "empty_tensors"}]
+    with open(path, "rb") as fh:
+        anomalies += _layout(fh, path.name, spans, int(reader.data_offset), file_size, alignment)
 
     chat_templates: dict[str, dict[str, Any]] = {}
     for key in sorted(reader.fields):
@@ -147,10 +118,7 @@ def _extract_folder_chat_templates(folder: Path) -> dict[str, dict[str, Any]]:
     out: dict[str, dict[str, Any]] = {}
     tc = folder / "tokenizer_config.json"
     if tc.is_file():
-        try:
-            cfg = json.loads(tc.read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-            cfg = None
+        cfg = json.loads(tc.read_text(encoding="utf-8"))
         if isinstance(cfg, dict) and cfg.get("chat_template") is not None:
             tpl = cfg["chat_template"]
             text = tpl if isinstance(tpl, str) else json.dumps(tpl, sort_keys=True, ensure_ascii=False)
@@ -171,95 +139,15 @@ def _inspect_safetensors_folder(folder: Path) -> dict[str, Any]:
         hn, hdr = weights.header(sf)
         hdr.pop("__metadata__", None)
         data_start = 8 + hn
-        file_size = sf.stat().st_size
         spans = sorted(
             (data_start + int(v["data_offsets"][0]), data_start + int(v["data_offsets"][1]), k)
             for k, v in hdr.items()
         )
-        if not spans:
-            if file_size > data_start:
-                with open(sf, "rb") as fh:
-                    nz, digest, head_hex = _scan_region(fh, data_start, file_size)
-                anomalies.append({
-                    "file": sf.name,
-                    "kind": "trailing_bytes",
-                    "offset": data_start,
-                    "length": file_size - data_start,
-                    "nonzero_bytes": nz,
-                    "sha256": digest,
-                    "head_hex": head_hex,
-                })
-                dirty_files.add(sf.name)
-            continue
-
         with open(sf, "rb") as fh:
-            if spans[0][0] > data_start:
-                nz, digest, head_hex = _scan_region(fh, data_start, min(spans[0][0], file_size))
-                anomalies.append({
-                    "file": sf.name,
-                    "kind": "inter_tensor_gap",
-                    "between": ["__header__", spans[0][2]],
-                    "offset": data_start,
-                    "length": spans[0][0] - data_start,
-                    "nonzero_bytes": nz,
-                    "sha256": digest,
-                    "head_hex": head_hex,
-                })
-                dirty_files.add(sf.name)
-
-            prev_end: int | None = None
-            prev_name: str | None = None
-            max_end = data_start
-            for start, end, name in spans:
-                if end > file_size:
-                    anomalies.append({
-                        "file": sf.name,
-                        "kind": "out_of_bounds",
-                        "tensor": name,
-                        "offset": start,
-                        "end": end,
-                        "file_size": file_size,
-                    })
-                    dirty_files.add(sf.name)
-                if prev_end is not None:
-                    if prev_end > start:
-                        anomalies.append({
-                            "file": sf.name,
-                            "kind": "overlap",
-                            "between": [prev_name, name],
-                            "prev_end": prev_end,
-                            "next_start": start,
-                        })
-                        dirty_files.add(sf.name)
-                    elif start > prev_end:
-                        nz, digest, head_hex = _scan_region(fh, prev_end, min(start, file_size))
-                        anomalies.append({
-                            "file": sf.name,
-                            "kind": "inter_tensor_gap",
-                            "between": [prev_name, name],
-                            "offset": prev_end,
-                            "length": start - prev_end,
-                            "nonzero_bytes": nz,
-                            "sha256": digest,
-                            "head_hex": head_hex,
-                        })
-                        dirty_files.add(sf.name)
-                if end > max_end:
-                    max_end = end
-                prev_end, prev_name = end, name
-
-            if file_size > max_end:
-                nz, digest, head_hex = _scan_region(fh, max_end, file_size)
-                anomalies.append({
-                    "file": sf.name,
-                    "kind": "trailing_bytes",
-                    "offset": max_end,
-                    "length": file_size - max_end,
-                    "nonzero_bytes": nz,
-                    "sha256": digest,
-                    "head_hex": head_hex,
-                })
-                dirty_files.add(sf.name)
+            found = _layout(fh, sf.name, spans, data_start, sf.stat().st_size, 1)  # safetensors packs its tensors with no padding
+        anomalies += found
+        if found:
+            dirty_files.add(sf.name)
 
     return {
         "format": "safetensors",
@@ -272,20 +160,20 @@ def _inspect_safetensors_folder(folder: Path) -> dict[str, Any]:
 
 
 def inspect(path) -> dict[str, Any]:
-    """Inspect a GGUF file or safetensors folder for container anomalies and chat templates."""
+    """Inspect a safetensors folder, or a GGUF file (any file, whatever its name, as diff reads it), for container anomalies and
+    chat templates."""
     p = Path(path)
-    if p.is_dir():
-        return _inspect_safetensors_folder(p)
-    if p.is_file() and p.suffix.lower() == ".gguf":
-        return _inspect_gguf(p)
-    raise SystemExit(f"{path}: expected a safetensors folder or a .gguf file")
+    return _inspect_safetensors_folder(p) if p.is_dir() else _inspect_gguf(p)
+
+
+def document(model) -> dict[str, Any]:
+    """The report: the model's files by SHA-256 and what inspect found."""
+    fs = weights.files(model)
+    return {"model": weights.named(fs, weights.hashes(fs)), "container": inspect(model)}
 
 
 def main(model, out):
-    res = inspect(model)
-    fs = weights.files(model)
-    doc = {"model": weights.named(fs, weights.hashes(fs)), "container": res}
-    report.finish(out, doc)
+    report.finish(out, document(model))
 
 
 if __name__ == "__main__":

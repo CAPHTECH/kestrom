@@ -5,8 +5,8 @@ audit.json, audit.html, and audit.sarif (no timestamps; rebuilds byte for byte).
       MODEL_DIR may be a safetensors folder or a single .gguf file.
       writes container.json, diff.json (when BASE_DIR is given), mirror.json (for safetensors), audit.json,
       audit.html, and audit.sarif into OUT_DIR.
-      Exits 0 on PASS (BASE_DIR + DECLARED.json checked with no outside changes, clean container, and no mirror
-      flags) or NO_FINDINGS (no declaration checked, clean container, and no mirror flags), 1 on FLAGGED.
+      Exits 0 on PASS (BASE_DIR + DECLARED.json checked with no outside changes, clean container, and a mirror scan
+      with no flags) or NO_FINDINGS (no flags, but no declaration checked or, for a GGUF file, mirror SKIPPED), 1 on FLAGGED.
       Refuses an OUT_DIR inside MODEL_DIR or BASE_DIR, and a safetensors folder of which mirror scans no tensor."""
 import html
 import json
@@ -15,18 +15,12 @@ from typing import Any
 
 from kestrom_verify import container as vcontainer
 from kestrom_verify import diff as vdiff
-from kestrom_verify import weights
 
 from . import mirror
 
 
 def _opt(val):
     return None if val in (None, "", "none") else val
-
-
-def _artifact_files(folder: Path) -> dict[str, str]:
-    fs = weights.files(folder)
-    return weights.named(fs, weights.hashes(fs))
 
 
 def _render_sarif(doc: dict[str, Any]) -> dict[str, Any]:
@@ -241,8 +235,9 @@ def audit(
     checks = []
     reproduce = []
 
-    cres = vcontainer.inspect(model_dir)
-    (out_path / "container.json").write_text(json.dumps(cres, ensure_ascii=False, indent=1), encoding="utf-8")
+    cdoc = vcontainer.document(model_dir)
+    cres = cdoc["container"]
+    (out_path / "container.json").write_text(json.dumps(cdoc, ensure_ascii=False, indent=1), encoding="utf-8")
     container_status = cres["status"]
     checks.append({
         "id": "container",
@@ -277,8 +272,7 @@ def audit(
         decl_arg = f" {decl_path}" if decl_path is not None else ""
         reproduce.append(f"kestrom-verify diff {base} {model_dir} diff.json{decl_arg}")
 
-    is_gguf = model_path.is_file() and model_path.suffix.lower() == ".gguf"
-    if is_gguf:
+    if model_path.is_file():  # GGUF, whatever its name, as container and diff read it
         mirror_status = "SKIPPED"
         mirror_summary = "SKIPPED (GGUF)"
         checks.append({
@@ -312,14 +306,14 @@ def audit(
 
     if container_status == "FLAGGED" or diff_status == "FLAGGED" or mirror_status == "FLAGGED":
         verdict = "FLAGGED"
-    elif diff_status == "PASS" and container_status == "PASS":
+    elif diff_status == "PASS" and container_status == "PASS" and mirror_status == "NO_FINDINGS":  # a SKIPPED mirror checked nothing
         verdict = "PASS"
     else:
         verdict = "NO_FINDINGS"
     doc: dict[str, Any] = {
         "schema": "kestrom-audit-v1",
         "verdict": verdict,
-        "model": {"path": str(model_dir), "files": model_files or _artifact_files(model_path)},
+        "model": {"path": str(model_dir), "files": model_files or cdoc["model"]},
         "base": {"path": str(base), "files": base_files} if base is not None else None,
         "checks": checks,
         "reproduce": reproduce,
