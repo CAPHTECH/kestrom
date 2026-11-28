@@ -7,7 +7,9 @@ binary encoder/LLM probes and fitted rules probes (MLX or PyTorch/CUDA; check re
       encoder (e.g. ModernBERT / mmBERT / BERT / DeBERTa, detected from config.json), which refuses a text longer than its
       tokenizer's limit. LAYERS: "auto" (up to 6 depth-aligned layer pairs at 25%-72% depth) or comma pairs "17:22,20:26"; each
       layer of either model appears in at most one pair. RANK: optional SVD rank cap ("none" or "-" to omit). RUNTIME is `mlx`
-      (default, Apple Silicon) or `torch` (PyTorch/transformers: CUDA, else MPS, else CPU). Warns on narrow anchors or low rank.
+      (default, Apple Silicon) or `torch` (PyTorch/transformers: CUDA, else MPS, else CPU; on every bridge command it refuses a
+      causal LM's last layer, whose transformers hidden state is after the final norm). Warns on narrow anchors, low rank, or a
+      concentrated anchor spectrum.
   kestrom bridge probe DONOR DATA.json OUT.npz LAYER [LAMBDA] [RUNTIME]
       fit a standardized L2-regularized binary linear prompt sensor on DONOR (causal LM on RUNTIME, or local HF PyTorch encoder)
       at LAYER from labeled DATA.json ([{"text"|"prompt": ..., "label": 0|1}, ...]), writing a standard steer-compatible OUT.npz
@@ -75,7 +77,7 @@ def _opt(val):
 
 
 def _check_runtime(runtime):
-    rt = str(runtime).lower()
+    rt = str(_opt(runtime) or "mlx").lower()
     if rt not in ("mlx", "torch"):
         raise SystemExit(f"RUNTIME is mlx or torch, not {runtime!r}")
     return rt
@@ -143,7 +145,20 @@ def _extract_texts(raw_items, name="ANCHORS"):
     return out
 
 
-def _capture_hf_encoder_layers(model_dir, raw_items, name, layers_idx=None, layers_spec=None, batch_size=32):
+def _pick_layers(layers_of, n_layers, torch_causal=False):
+    """The layers layers_of(n_layers) names, refusing one outside the model and, for a PyTorch causal LM, its last layer:
+    transformers gives that layer's hidden state after the final norm, while MLX and kestrom generate read the layer's output."""
+    layers = [int(li) for li in layers_of(n_layers)]
+    for li in layers:
+        if not 0 <= li < n_layers:
+            raise SystemExit(f"layer {li} out of bounds for model with {n_layers} layers")
+        if torch_causal and li == n_layers - 1:
+            raise SystemExit(f"layer {li} is the model's last: on RUNTIME torch its hidden state is taken after the final norm, "
+                             "which kestrom generate does not edit; give an earlier layer, or RUNTIME mlx")
+    return layers
+
+
+def _capture_hf_encoder_layers(model_dir, raw_items, name, layers_of, batch_size=32):
     """Capture sequence-mean hidden states [N, K, D] (float64) from a local Hugging Face PyTorch encoder model."""
     import torch
     from transformers import AutoModel, AutoTokenizer
@@ -154,12 +169,7 @@ def _capture_hf_encoder_layers(model_dir, raw_items, name, layers_idx=None, laye
     model = AutoModel.from_pretrained(str(model_dir), local_files_only=True)
     model.eval().to(device)
     n_layers = int(model.config.num_hidden_layers)
-    if layers_idx is None:
-        layers_idx = sorted({la for la, _ in parse_layers(layers_spec, n_layers, 10**6)})
-    else:
-        for li in layers_idx:
-            if not (0 <= int(li) < n_layers):
-                raise SystemExit(f"layer {li} out of bounds for encoder with {n_layers} layers")
+    layers_idx = _pick_layers(layers_of, n_layers)
 
     chunks = []
     with torch.no_grad():
@@ -184,22 +194,19 @@ def _capture_hf_encoder_layers(model_dir, raw_items, name, layers_idx=None, laye
     return Z, n_layers, layers_idx, tok
 
 
-def _capture_torch_causal_layers(model_dir, raw_items, name, layers_idx=None, layers_spec=None):
+def _capture_torch_causal_layers(model_dir, raw_items, name, layers_of, check_tok=None):
     """Capture sequence-mean hidden states [N, K, D] (float64) from a PyTorch CausalLM via kestrom_verify.pt.load."""
     import torch
     from kestrom_verify import pt
     from transformers import AutoTokenizer
 
-    model = pt.load(model_dir)
     tok = AutoTokenizer.from_pretrained(str(model_dir))
+    if check_tok is not None:
+        check_tok(tok)
+    model = pt.load(model_dir)
     device = model.device
     n_layers = _torch_num_layers(model)
-    if layers_idx is None:
-        layers_idx = sorted({la for la, _ in parse_layers(layers_spec, n_layers, 10**6)})
-    else:
-        for li in layers_idx:
-            if not (0 <= int(li) < n_layers):
-                raise SystemExit(f"layer {li} out of bounds for model with {n_layers} layers")
+    layers_idx = _pick_layers(layers_of, n_layers, torch_causal=True)
 
     ids_list = encode_prompts(tok, raw_items)
     rows_out = []
@@ -218,19 +225,32 @@ def _capture_torch_causal_layers(model_dir, raw_items, name, layers_idx=None, la
     return Z, n_layers, layers_idx, tok
 
 
-def _capture_torch_token_stream(model_dir, raw_docs, layer):
-    """Capture token-level hidden states [T, D] (float64) at decoder `layer` via PyTorch CausalLM."""
+def _capture_token_stream(model_dir, raw_docs, layer, runtime, check_tok=None):
+    """Capture token-level hidden states [T, D] (float64) at decoder `layer` of the causal LM in model_dir on RUNTIME, after
+    check_tok(tokenizer) when given; returns (H, tokenizer)."""
+    if runtime != "torch":
+        from mlx_lm import load
+        import mlx.core as mx
+
+        model, tok = load(str(model_dir))
+        if check_tok is not None:
+            check_tok(tok)
+        H = capture_token_stream(model, tok, raw_docs, layer)
+        del model
+        gc.collect()
+        mx.clear_cache()
+        return H, tok
+
     import torch
     from kestrom_verify import pt
     from transformers import AutoTokenizer
 
-    model = pt.load(model_dir)
     tok = AutoTokenizer.from_pretrained(str(model_dir))
+    if check_tok is not None:
+        check_tok(tok)
+    model = pt.load(model_dir)
     device = model.device
-    n_layers = _torch_num_layers(model)
-    layer = int(layer)
-    if not (0 <= layer < n_layers):
-        raise SystemExit(f"layer {layer} out of bounds for model with {n_layers} layers")
+    layer = _pick_layers(lambda n: [layer], _torch_num_layers(model), torch_causal=True)[0]
 
     chunks = []
     with torch.no_grad():
@@ -250,24 +270,22 @@ def _capture_torch_token_stream(model_dir, raw_docs, layer):
     return np.concatenate(chunks, axis=0), tok
 
 
-def _capture_model_layers(model_dir, raw_items, name, layers_idx=None, layers_spec=None, runtime="mlx", allow_encoder=False):
-    """Capture sequence-mean hidden states [N, K, D] using HF PyTorch encoder (if allowed & detected), torch, or mlx."""
+def _capture_model_layers(model_dir, raw_items, name, layers_of, runtime="mlx", allow_encoder=False, check_tok=None):
+    """Capture sequence-mean hidden states [N, K, D] at layers_of(the model's layer count), using HF PyTorch encoder (if allowed &
+    detected), torch, or mlx, after check_tok(tokenizer) when given; returns (Z, layer count, layers, tokenizer)."""
     rt = _check_runtime(runtime)
     if allow_encoder and _is_hf_encoder(model_dir):
-        return _capture_hf_encoder_layers(model_dir, raw_items, name, layers_idx=layers_idx, layers_spec=layers_spec)
+        return _capture_hf_encoder_layers(model_dir, raw_items, name, layers_of)
     if rt == "torch":
-        return _capture_torch_causal_layers(model_dir, raw_items, name, layers_idx=layers_idx, layers_spec=layers_spec)
+        return _capture_torch_causal_layers(model_dir, raw_items, name, layers_of, check_tok=check_tok)
     from mlx_lm import load
     import mlx.core as mx
 
     model, tok = load(str(model_dir))
+    if check_tok is not None:
+        check_tok(tok)
     n_layers = len(model.layers)
-    if layers_idx is None:
-        layers_idx = sorted({la for la, _ in parse_layers(layers_spec, n_layers, 10**6)})
-    else:
-        for li in layers_idx:
-            if not (0 <= int(li) < n_layers):
-                raise SystemExit(f"layer {li} out of bounds for model with {n_layers} layers")
+    layers_idx = _pick_layers(layers_of, n_layers)
     ids_list = encode_prompts(tok, raw_items)
     Z = capture_layers(model, ids_list, layers_idx)
     del model
@@ -423,55 +441,16 @@ def fit(donor_dir, recip_dir, anchors_file, out_npz, layers=None, rank=None, run
     r_cap = None if r_opt is None else int(r_opt)
 
     Z_a_uniq, n_a, d_layers_uniq, tok_a = _capture_model_layers(
-        donor_dir, raw, "ANCHORS", layers_spec=layers, runtime=rt, allow_encoder=True
+        donor_dir, raw, "ANCHORS", lambda n: sorted({la for la, _ in parse_layers(layers, n, 10**6)}), runtime=rt, allow_encoder=True
     )
     d_a = Z_a_uniq.shape[-1]
     d_slot = {la: i for i, la in enumerate(d_layers_uniq)}
 
-    # Recipient layers depend on n_b; capture via runtime helper with exact parsed pairs.
-    if rt == "torch":
-        import torch
-        from kestrom_verify import pt
-        from transformers import AutoTokenizer
-
-        recip = pt.load(recip_dir)
-        tok_b = AutoTokenizer.from_pretrained(str(recip_dir))
-        check_shared_ids(raw, tok_a, tok_b, "ANCHORS")
-        del tok_a
-        n_b = _torch_num_layers(recip)
-        pairs = parse_layers(layers, n_a, n_b)
-        r_layers_uniq = sorted({lb for _, lb in pairs})
-        ids_b = encode_prompts(tok_b, raw)
-        rows_b = []
-        with torch.no_grad():
-            for ids in ids_b:
-                if not ids:
-                    raise SystemExit("ANCHORS entry produced zero tokens")
-                x = torch.tensor([ids], dtype=torch.long, device=recip.device)
-                out = recip(x, use_cache=False, output_hidden_states=True)
-                vecs = [out.hidden_states[int(li) + 1][0].to(torch.float32).mean(dim=0).cpu().numpy().astype(np.float64) for li in r_layers_uniq]
-                rows_b.append(np.stack(vecs, axis=0))
-        Z_b_uniq = np.stack(rows_b, axis=0)
-        dev_b = recip.device
-        del recip, tok_b
-        gc.collect()
-        _clear_torch_cache(torch, dev_b)
-    else:
-        from mlx_lm import load
-        import mlx.core as mx
-
-        recip, tok_b = load(str(recip_dir))
-        check_shared_ids(raw, tok_a, tok_b, "ANCHORS")
-        del tok_a
-        n_b = len(recip.layers)
-        pairs = parse_layers(layers, n_a, n_b)
-        r_layers_uniq = sorted({lb for _, lb in pairs})
-        ids_b = encode_prompts(tok_b, raw)
-        Z_b_uniq = capture_layers(recip, ids_b, r_layers_uniq)
-        del recip, tok_b
-        gc.collect()
-        mx.clear_cache()
-
+    Z_b_uniq, n_b, r_layers_uniq, _ = _capture_model_layers(
+        recip_dir, raw, "ANCHORS", lambda n: sorted({lb for _, lb in parse_layers(layers, n_a, n)}), runtime=rt,
+        check_tok=lambda tok: check_shared_ids(raw, tok_a, tok, "ANCHORS"),
+    )
+    pairs = parse_layers(layers, n_a, n_b)
     d_b = Z_b_uniq.shape[-1]
     r_slot = {lb: i for i, lb in enumerate(r_layers_uniq)}
 
@@ -570,6 +549,7 @@ def fit_probe_arrays(Z, labels, layer, num_layers, lam=1.0):
 def probe(donor_dir, data_file, out_npz, layer, lam=1.0, runtime="mlx"):
     """Fit a binary linear prompt sensor on DONOR (MLX LM, PyTorch LM, or HF PyTorch encoder) at LAYER and write OUT.npz."""
     rt = _check_runtime(runtime)
+    lam = 1.0 if _opt(lam) is None else lam
     raw = report.read(data_file)
     if not isinstance(raw, list) or not raw:
         raise SystemExit("bridge probe DATA.json must be a non-empty JSON list of {'text'|'prompt', 'label': 0|1}")
@@ -582,7 +562,7 @@ def probe(donor_dir, data_file, out_npz, layer, lam=1.0, runtime="mlx"):
     layer = int(layer)
 
     Z_all, n_layers, _, _ = _capture_model_layers(
-        donor_dir, raw, "DATA.json", layers_idx=[layer], runtime=rt, allow_encoder=True
+        donor_dir, raw, "DATA.json", lambda n: [layer], runtime=rt, allow_encoder=True
     )
     Z = Z_all[:, 0, :]
 
@@ -612,9 +592,6 @@ def map_arrays(bridge, st, calib_means=None):
 
     for k, (la, lb) in enumerate(zip(d_layers, r_layers)):
         M = bridge["M"][k].astype(np.float64)
-        mu_a = bridge["mu_a"][k].astype(np.float64)
-        mu_b = bridge["mu_b"][k].astype(np.float64)
-        sc = float(bridge["scale"][k])
         ra = float(bridge["rms_a"][k])
         rb = float(bridge["rms_b"][k])
 
@@ -645,10 +622,7 @@ def map_arrays(bridge, st, calib_means=None):
             q = float(st["quantile"][la]) if "quantile" in st else 0.5
             threshold[lb] = np.float32(np.quantile(calib_means[lb].astype(np.float64) @ c_unit, q))
         else:
-            t_a = float(st["threshold"][la])
-            # Exact closed-form transform of hyperplane h_b @ c_unit > thresh from h_b = mu_b + sc * ((h_a - mu_a) @ M.T)
-            t_b = float(mu_b @ c_unit) + sc / n_craw * (t_a - float(mu_a @ c_a))
-            threshold[lb] = np.float32(t_b)
+            threshold[lb] = np.float32(closed_threshold(bridge, k, c_a, float(st["threshold"][la])))
 
     mapped = [lb for lb in r_layers if np.any(direction[lb]) or np.any(cond[lb])]
     if not mapped:
@@ -662,6 +636,15 @@ def map_arrays(bridge, st, calib_means=None):
         cond_retention=cond_retention,
         mapped_layers=np.array(mapped, np.int32),
     )
+
+
+def closed_threshold(bridge, k, c_a, t_a):
+    """The recipient threshold of the donor hyperplane h_a @ c_a > t_a on the mapped unit cond through pair k, exact from
+    h_b = mu_b + scale * ((h_a - mu_a) @ M.T)."""
+    c_raw = c_a @ bridge["M"][k].astype(np.float64).T
+    n_craw = float(np.linalg.norm(c_raw))
+    mu_a, mu_b = bridge["mu_a"][k].astype(np.float64), bridge["mu_b"][k].astype(np.float64)
+    return float(mu_b @ (c_raw / n_craw)) + float(bridge["scale"][k]) / n_craw * (t_a - float(mu_a @ c_a))
 
 
 def check_map_health(bridge, st, mapped, calib_means=None):
@@ -701,14 +684,7 @@ def check_map_health(bridge, st, mapped, calib_means=None):
                     "calibration prompts may all belong to one class or phrasing"
                 )
             else:
-                M = bridge["M"][k].astype(np.float64)
-                mu_a = bridge["mu_a"][k].astype(np.float64)
-                mu_b = bridge["mu_b"][k].astype(np.float64)
-                sc = float(bridge["scale"][k])
-                c_a = st["cond"][la].astype(np.float64)
-                n_craw = float(np.linalg.norm(c_a @ M.T))
-                t_a = float(st["threshold"][la])
-                t_closed = float(mu_b @ c_unit) + sc / n_craw * (t_a - float(mu_a @ c_a))
+                t_closed = closed_threshold(bridge, k, st["cond"][la].astype(np.float64), float(st["threshold"][la]))
                 t_cal = float(mapped["threshold"][lb])
                 shift_z = abs(t_cal - t_closed) / std_cal
                 rate_closed = float(np.mean(s_cal > t_closed))
@@ -741,7 +717,7 @@ def map_steer(bridge_npz, donor_steer_npz, out_npz, recip_dir=None, calib_prompt
             raise SystemExit("CALIB_PROMPTS must be a non-empty JSON list")
         r_layers = [int(x) for x in br["recip_layers"]]
         captured, _, _, _ = _capture_model_layers(
-            recip_dir, raw, "CALIB_PROMPTS", layers_idx=r_layers, runtime=rt, allow_encoder=False
+            recip_dir, raw, "CALIB_PROMPTS", lambda n: r_layers, runtime=rt
         )
         calib_means = {lb: captured[:, k] for k, lb in enumerate(r_layers)}
     out = map_arrays(br, st, calib_means=calib_means)
@@ -890,13 +866,16 @@ def map_fit_arrays(bridge, fit_npz, donor_H=None, recip_H=None):
         W_b = mp * gain[None, :]
         bias_b = sa.mean(axis=0) - gain * sb.mean(axis=0)
 
-    return dict(
+    out = dict(
         rules=fit_npz["rules"],
         P=W_b.astype(np.float32),
         bias=bias_b.astype(np.float32),
         k=np.float32(fit_npz["k"]),
         layer=np.int32(recip_layer),
     )
+    if donor_H is not None:
+        out["gain"] = gain  # per-probe std gain, for check_rules_health (not written to OUT_FIT.npz)
+    return out
 
 
 def map_rules(bridge_npz, donor_fit_npz, out_fit_npz, donor_dir=None, recip_dir=None, calib_docs=None, runtime="mlx"):
@@ -912,36 +891,11 @@ def map_rules(bridge_npz, donor_fit_npz, out_fit_npz, donor_dir=None, recip_dir=
     warnings = []
     if calib_docs is not None:
         raw_docs = report.read(calib_docs)
-        if rt == "torch":
-            donor_H, tok_a = _capture_torch_token_stream(donor_dir, raw_docs, int(ft["layer"]))
-            recip_H, tok_b = _capture_torch_token_stream(recip_dir, raw_docs, int(out["layer"]))
-            check_shared_ids(raw_docs, tok_a, tok_b, "CALIB_DOCS")
-            del tok_a, tok_b
-        else:
-            from mlx_lm import load
-            import mlx.core as mx
-
-            donor, tok_a = load(str(donor_dir))
-            donor_H = capture_token_stream(donor, tok_a, raw_docs, int(ft["layer"]))
-            del donor
-            gc.collect()
-            mx.clear_cache()
-
-            recip, tok_b = load(str(recip_dir))
-            check_shared_ids(raw_docs, tok_a, tok_b, "CALIB_DOCS")
-            recip_H = capture_token_stream(recip, tok_b, raw_docs, int(out["layer"]))
-            del recip, tok_a, tok_b
-            gc.collect()
-            mx.clear_cache()
-
+        donor_H, tok_a = _capture_token_stream(donor_dir, raw_docs, int(ft["layer"]), rt)
+        recip_H, _ = _capture_token_stream(recip_dir, raw_docs, int(out["layer"]), rt,
+                                           check_tok=lambda tok: check_shared_ids(raw_docs, tok_a, tok, "CALIB_DOCS"))
         out = map_fit_arrays(br, ft, donor_H=donor_H, recip_H=recip_H)
-        # Compute Z-score gains for diagnostics
-        idx = [int(x) for x in br["donor_layers"]].index(int(ft["layer"]))
-        P_a = np.asarray(ft["P"], dtype=np.float64)
-        bias_a = np.asarray(ft["bias"], dtype=np.float64) if "bias" in ft else np.zeros(P_a.shape[1], dtype=np.float64)
-        M = br["M"][idx].astype(np.float64)
-        gain = (donor_H @ P_a + bias_a).std(axis=0) / (recip_H @ (M @ P_a)).std(axis=0)
-        warnings = check_rules_health(gain, donor_H.shape[0], recip_H.shape[0])
+        warnings = check_rules_health(out.pop("gain"), donor_H.shape[0], recip_H.shape[0])
     np.savez(out_fit_npz, **out)
     mode = "zscore" if calib_docs is not None else "closed-form"
     print(f"mapped rules fit: layer {int(ft['layer'])} -> {int(out['layer'])}, probes={out['P'].shape[1]}, mode={mode}", flush=True)
@@ -1090,21 +1044,21 @@ def diagnose(bridge_npz, donor_steer_npz, recip_dir, calib_prompts, prod_prompts
             raise SystemExit("PROD_PROMPTS must be a non-empty JSON list")
         combined = list(raw_cal) + list(raw_prod)
         captured, _, _, _ = _capture_model_layers(
-            recip_dir, combined, "CALIB_PROMPTS/PROD_PROMPTS", layers_idx=r_layers, runtime=rt, allow_encoder=False
+            recip_dir, combined, "CALIB_PROMPTS/PROD_PROMPTS", lambda n: r_layers, runtime=rt
         )
         n_cal = len(raw_cal)
         calib_means = {lb: captured[:n_cal, k] for k, lb in enumerate(r_layers)}
         prod_means = {lb: captured[n_cal:, k] for k, lb in enumerate(r_layers)}
     else:
         captured, _, _, _ = _capture_model_layers(
-            recip_dir, raw_cal, "CALIB_PROMPTS", layers_idx=r_layers, runtime=rt, allow_encoder=False
+            recip_dir, raw_cal, "CALIB_PROMPTS", lambda n: r_layers, runtime=rt
         )
         calib_means = {lb: captured[:, k] for k, lb in enumerate(r_layers)}
         prod_means = None
 
     doc = diagnose_calibration(br, st, calib_means, prod_means=prod_means)
     if out_json is not None:
-        Path(out_json).write_text(json.dumps(doc, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        Path(out_json).write_text(json.dumps(doc, ensure_ascii=False, indent=1, sort_keys=True) + "\n", encoding="utf-8")
     for row in doc["layers"]:
         line = (
             f"diagnose layer {row['recip_layer']}: retention=(dir={row['dir_retention']:.3f}, cond={row['cond_retention']:.3f}), "

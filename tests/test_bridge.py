@@ -1,4 +1,6 @@
 """Numpy-only tests for kestrom.bridge (Procrustes fit, RMS steer map, chaining, CLI mapping, and tuple-safe steer.install)."""
+import json
+
 import numpy as np
 import pytest
 
@@ -535,3 +537,29 @@ def test_runtime_validation_and_dash_placeholders(tmp_path):
     np.savez(st_p, direction=np.zeros((6, 16), np.float32), cond=st_c, threshold=np.zeros(6, np.float32))
     bridge.map_steer(str(br_p), str(st_p), str(out_p), "-", "-", "torch")
     assert list(np.load(out_p)["mapped_layers"]) == [3]
+
+
+def test_placeholders_and_torch_last_layer(tmp_path, monkeypatch):
+    assert bridge._check_runtime("-") == bridge._check_runtime("none") == bridge._check_runtime(None) == "mlx"
+    assert bridge._pick_layers(lambda n: [0, n - 1], 6) == [0, 5]
+    assert bridge._pick_layers(lambda n: [n - 2], 6, torch_causal=True) == [4]
+    with pytest.raises(SystemExit, match="last"):
+        bridge._pick_layers(lambda n: [n - 1], 6, torch_causal=True)
+    with pytest.raises(SystemExit, match="out of bounds"):
+        bridge._pick_layers(lambda n: [n], 6)
+
+    # LAMBDA "-" with a RUNTIME given falls back to 1.0 (capture replaced by synthetic states)
+    Za, _, _, _, _, _ = _make_synth_spaces(seed=5, n=80, d_a=16, d_b=12, r=8)
+    y = (Za[:, 0] > np.median(Za[:, 0])).astype(int).tolist()
+    data = tmp_path / "data.json"
+    data.write_text(json.dumps([{"text": str(i), "label": v} for i, v in enumerate(y)]))
+    seen = {}
+
+    def fake(model_dir, raw, name, layers_of, runtime="mlx", allow_encoder=False, check_tok=None):
+        seen["runtime"] = runtime
+        return Za[:, None, :], 6, bridge._pick_layers(layers_of, 6), None
+    monkeypatch.setattr(bridge, "_capture_model_layers", fake)
+    bridge.probe("d", str(data), str(tmp_path / "p.npz"), "2", "-", "torch")
+    assert seen["runtime"] == "torch"
+    ref = bridge.fit_probe_arrays(Za, y, 2, 6, lam=1.0)
+    assert np.array_equal(np.load(tmp_path / "p.npz")["cond"], ref["cond"])
