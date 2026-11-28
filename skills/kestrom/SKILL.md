@@ -33,6 +33,7 @@ Never state a guarantee no check computed. If U0 fails, G1 and G2 in that report
 | Keep a string (not a token) out, or avoid stock phrases | a `phrase` line in a rules file, `kestrom generate --rules` | `compare events` |
 | Change style only where a condition on the prompt holds | `kestrom steer direction`, then `in ... prompt` and `add` lines | `compare events` |
 | Stop thinking loops | a `loopguard` line | `compare events` (`examples/loop-guard`) |
+| Exact multi-digit inline arithmetic without weight edits or tool restarts | an `alu: [MIN_DIGITS]` line (combines freely with `kv:`) | `compare events` |
 | Keep JSON control keys independent of untrusted data (prompt injection) | `kestrom ifc control` (`ids` full, `clean_ids` untrusted masked) | `compare events` against clean Track B (`examples/ifc-control`) |
 | Prevent secret leakage into public text (`strict-public` zero-flow or `gated-public` lift gate) | `kestrom ifc firewall` (`ids` public+secret, `clean_ids` public only) | `compare events` (`strict-public` vs clean Track B; `gated-public` vs full Track A) |
 | Make a model's answer open with the class that hand-written rules answer (rules of `kestrom rules run`, connected to a model) | an `open [HEAD]: FILE [CLASS] ["TEXT"]` line; each prompt carries `data`, what the rules read | `compare events` (`examples/rules-open`); it does not check that the class or the text after it is right |

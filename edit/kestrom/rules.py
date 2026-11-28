@@ -107,6 +107,11 @@ a name in an h1 line: declared by an `in` line, or else read by a probe (by run,
                                              without the fact cache before decoding and passed as 0/1 `values` to the KV bank's rules (to the
                                              last step of "steps": earlier steps give their own; values given in "data" win; `"data"`
                                              may be omitted when the bank reads only those prompt inputs). OUT records "kv" as the matched entry key (list when >=2) or null. One kv line at most
+  alu: [MIN_DIGITS]                          inline exact integer sidecar (+, -, *, ×) during greedy decoding: whenever the generated
+                                             text ends with `<lhs> <op> <rhs> =` (at least MIN_DIGITS digits on either side, 4 unless
+                                             given, or 3x3+ multiplication), injects the exact BPE-aligned integer tokens and records
+                                             each injected position as an event; leaves unmatched outputs bit-identical (zero weight edits).
+                                             OUT records "alu" as a list of `{position, expr, injected}` firings. One alu line at most
 """
 import ast
 import json
@@ -126,7 +131,7 @@ K = 4.0  # the scale of the out lines and the margin of the moves, unless a fit 
 TERM = re.compile(r"([+-]?)\s*(?:(\d+(?:\.\d+)?)\s*\*\s*)?([A-Za-z_][\w.]*)")
 CODE = re.compile(r'(?:[^"#]|"(?:[^"\\]|\\.)*")*')  # a line up to a # outside double quotes
 HEAD = re.compile(r'((?:[^":]|"(?:[^"\\]|\\.)*")*):')  # the head: up to the first : outside double quotes
-KINDS = ("in", "h1", "h2", "out", "move", "ban", "add", "phrase", "loopguard", "set", "open", "kv")
+KINDS = ("in", "h1", "h2", "out", "move", "ban", "add", "phrase", "loopguard", "set", "open", "kv", "alu")
 
 
 def lines(text):
@@ -287,6 +292,21 @@ def compile_rules(text, units=UNITS):
             kvs.append((p[0], mm))
     if len(kvs) > 1:
         raise ValueError("one kv line at most, `kv: BANK_DIR [MAX_MATCH]`")
+    alus = []
+    for kind, rest, body in L:
+        if kind == "alu":
+            p = body.split()
+            if rest or len(p) > 1:
+                raise ValueError("one alu line at most, `alu: [MIN_DIGITS]`")
+            try:
+                md = int(p[0]) if p else 4
+            except ValueError:
+                raise ValueError("one alu line at most, `alu: [MIN_DIGITS]`")
+            if md < 1:
+                raise ValueError("the MIN_DIGITS of an alu line is at least 1")
+            alus.append(md)
+    if len(alus) > 1:
+        raise ValueError("one alu line at most, `alu: [MIN_DIGITS]`")
     sets = []
     for kind, rest, body in L:
         if kind == "set":
@@ -321,7 +341,7 @@ def compile_rules(text, units=UNITS):
     used = sorted(set(np.flatnonzero(net["W3"].any(1)).tolist()) | {u for _, _, u in moves} | {u for _, u in bans})
     return dict(inputs=inputs, declared=declared, tokens=tokens, moves=moves, bans=bans, adds=adds, phrases=phrases,
                 window=(int(loops[0]) if loops[0] else WINDOW) if loops else None, used=used, units=h2n, sets=sets, net=net,
-                open=opens[0] if opens else None, kv=kvs[0] if kvs else None)
+                open=opens[0] if opens else None, kv=kvs[0] if kvs else None, alu=alus[0] if alus else None)
 
 
 def unit_values(net, x, xp=np):
@@ -349,7 +369,7 @@ def standalone(rules_file):
     R["heads"] = {}
     for i, c in enumerate(R["tokens"]):
         R["heads"].setdefault(c.split("/", 1)[0] if "/" in c else "", []).append(i)
-    if R["moves"] or R["bans"] or R["adds"] or R["phrases"] or R["window"] is not None or R["open"] or R["kv"] or not R["tokens"] or any(
+    if R["moves"] or R["bans"] or R["adds"] or R["phrases"] or R["window"] is not None or R["open"] or R["kv"] or R["alu"] is not None or not R["tokens"] or any(
             s[0] not in STANDALONE or (s[0] == "prev" and s[1] not in R["units"]) for s in R["declared"].values()) or any(
             name in R["declared"] or any(t not in R["inputs"] + R["registers"] for t in names_of(e)) for name, e, _ in R["sets"]):
         raise SystemExit(f"run, build and weigh read in lines of {', '.join(STANDALONE)} (prev of an h2 unit), h1, h2, out and set lines only (a set "
