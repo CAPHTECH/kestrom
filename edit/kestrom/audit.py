@@ -1,13 +1,19 @@
-"""One-command acceptance audit: weight diff (optional BASE_DIR + DECLARED.json) and anti-quantization mirror scan, producing deterministic audit.json, audit.html, and audit.sarif (no timestamps; rebuilds byte for byte).
+"""One-command acceptance audit: container integrity (trailing bytes, layout anomalies, chat_template extraction),
+weight diff (optional BASE_DIR + DECLARED.json), and anti-quantization mirror scan, producing deterministic
+audit.json, audit.html, and audit.sarif (no timestamps; rebuilds byte for byte).
   kestrom audit MODEL_DIR OUT_DIR [BASE_DIR|none] [DECLARED.json|none] [MODE] [BITS] [GROUP] [RUNTIME]
-      writes diff.json (when BASE_DIR is given), mirror.json, audit.json, audit.html, and audit.sarif into OUT_DIR.
-      Exits 0 on PASS (BASE_DIR + DECLARED.json checked with no outside changes and no mirror flags) or NO_FINDINGS (no declaration checked and no mirror flags), 1 on FLAGGED.
-      Refuses an OUT_DIR inside MODEL_DIR or BASE_DIR, and a model of which mirror scans no tensor."""
+      MODEL_DIR may be a safetensors folder or a single .gguf file.
+      writes container.json, diff.json (when BASE_DIR is given), mirror.json (for safetensors), audit.json,
+      audit.html, and audit.sarif into OUT_DIR.
+      Exits 0 on PASS (BASE_DIR + DECLARED.json checked with no outside changes, clean container, and no mirror
+      flags) or NO_FINDINGS (no declaration checked, clean container, and no mirror flags), 1 on FLAGGED.
+      Refuses an OUT_DIR inside MODEL_DIR or BASE_DIR, and a safetensors folder of which mirror scans no tensor."""
 import html
 import json
 from pathlib import Path
 from typing import Any
 
+from kestrom_verify import container as vcontainer
 from kestrom_verify import diff as vdiff
 from kestrom_verify import weights
 
@@ -26,9 +32,21 @@ def _artifact_files(folder: Path) -> dict[str, str]:
 def _render_sarif(doc: dict[str, Any]) -> dict[str, Any]:
     rules_meta = [
         {
+            "id": "KESTROM-CONTAINER-TRAILING-BYTES",
+            "name": "ContainerTrailingBytes",
+            "shortDescription": {"text": "Model file contains unreferenced trailing bytes past the final tensor."},
+            "defaultConfiguration": {"level": "error"},
+        },
+        {
+            "id": "KESTROM-CONTAINER-LAYOUT-ANOMALY",
+            "name": "ContainerLayoutAnomaly",
+            "shortDescription": {"text": "Model file contains tensor overlap, out-of-bounds span, or non-zero/excess gap."},
+            "defaultConfiguration": {"level": "error"},
+        },
+        {
             "id": "KESTROM-DIFF-UNDECLARED",
             "name": "UndeclaredWeightOrFileChange",
-            "shortDescription": {"text": "Delivered model contains tensor or file changes outside DECLARED.json."},
+            "shortDescription": {"text": "Delivered model contains tensor, metadata, or file changes outside DECLARED.json."},
             "defaultConfiguration": {"level": "error"},
         },
         {
@@ -40,12 +58,35 @@ def _render_sarif(doc: dict[str, Any]) -> dict[str, Any]:
     ]
     results = []
     for chk in doc["checks"]:
-        if chk["id"] == "diff" and chk["status"] == "FLAGGED":
+        if chk["id"] == "container" and chk["status"] == "FLAGGED":
+            for anom in chk["anomalies"]:
+                kind = anom.get("kind", "layout")
+                rule_id = (
+                    "KESTROM-CONTAINER-TRAILING-BYTES"
+                    if kind == "trailing_bytes"
+                    else "KESTROM-CONTAINER-LAYOUT-ANOMALY"
+                )
+                msg = f"Container anomaly ({kind}) in {anom.get('file', doc['model']['path'])}"
+                if "length" in anom:
+                    msg += f": {anom['length']} bytes at offset {anom.get('offset', 0)} (nonzero={anom.get('nonzero_bytes', 0)})"
+                results.append({
+                    "ruleId": rule_id,
+                    "level": "error",
+                    "message": {"text": msg},
+                    "locations": [{"physicalLocation": {"artifactLocation": {"uri": str(doc["model"]["path"])}}}],
+                })
+        elif chk["id"] == "diff" and chk["status"] == "FLAGGED":
+            md = chk.get("metadata_diff")
             for item in chk["outside"]:
+                msg = f"Undeclared change outside declaration: {item}"
+                if item == "__metadata__" and md:
+                    keys = md.get("changed", []) + md.get("added", []) + md.get("removed", [])
+                    if keys:
+                        msg += f" (keys: {', '.join(keys[:10])})"
                 results.append({
                     "ruleId": "KESTROM-DIFF-UNDECLARED",
                     "level": "error",
-                    "message": {"text": f"Undeclared change outside declaration: {item}"},
+                    "message": {"text": msg},
                     "locations": [{"physicalLocation": {"artifactLocation": {"uri": str(doc["model"]["path"])}}}],
                 })
         elif chk["id"] == "mirror" and chk["status"] == "FLAGGED":
@@ -72,10 +113,24 @@ def _render_html(doc: dict[str, Any]) -> str:
     verdict = doc["verdict"]
     badge_cls = "badge-pass" if verdict == "PASS" else ("badge-neutral" if verdict == "NO_FINDINGS" else "badge-fail")
     rows = []
+    chat_templates: dict[str, dict[str, Any]] = {}
     for chk in doc["checks"]:
         st = chk["status"]
-        st_cls = "badge-pass" if st == "PASS" else ("badge-neutral" if st == "NO_FINDINGS" else ("badge-warn" if st == "MEASURED" else "badge-fail"))
-        if chk["id"] == "diff":
+        st_cls = (
+            "badge-pass" if st == "PASS"
+            else ("badge-neutral" if st in ("NO_FINDINGS", "SKIPPED")
+                  else ("badge-warn" if st == "MEASURED" else "badge-fail"))
+        )
+        if chk["id"] == "container":
+            chat_templates = chk.get("chat_templates", {})
+            detail = (
+                f"format={chk['format']}, files clean {chk['files_clean']} of {chk['files_scanned']}, "
+                f"anomalies={len(chk['anomalies'])}, chat_templates={len(chat_templates)}"
+            )
+            if chk["anomalies"]:
+                kinds = ", ".join(f"{a.get('kind')}({a.get('file')})" for a in chk["anomalies"][:5])
+                detail += f"; {kinds}"
+        elif chk["id"] == "diff":
             s = chk["summary"]
             detail = (
                 f"tensors changed {s['tensors changed']} of {s['tensors']}, "
@@ -83,6 +138,13 @@ def _render_html(doc: dict[str, Any]) -> str:
             )
             if chk["outside"]:
                 detail += f"; outside declaration: {', '.join(chk['outside'][:10])}"
+            md = chk.get("metadata_diff")
+            if md:
+                keys = md.get("changed", []) + md.get("added", []) + md.get("removed", [])
+                if keys:
+                    detail += f"; metadata keys: {', '.join(keys[:10])}"
+        elif chk["status"] == "SKIPPED":
+            detail = chk.get("reason", "skipped")
         else:
             ws = chk["weight_summary"]
             detail = (
@@ -97,6 +159,18 @@ def _render_html(doc: dict[str, Any]) -> str:
             f"<td><span class=\"badge {st_cls}\">{esc(st)}</span></td>"
             f"<td>{esc(detail)}</td></tr>"
         )
+    if chat_templates:
+        tpl_blocks = []
+        for key, info in sorted(chat_templates.items()):
+            tpl_blocks.append(
+                f"<div><strong>{esc(key)}</strong> "
+                f"(length={info['length']} bytes, sha256=<span class=\"mono\">{esc(info['sha256'])}</span>)"
+                f"<details><summary>Show template text</summary><pre>{esc(info['text'])}</pre></details></div>"
+            )
+        tpl_html = "\n".join(tpl_blocks)
+    else:
+        tpl_html = "<p>No <code>chat_template</code> metadata found.</p>"
+
     file_rows = "".join(
         f"<tr><td class=\"mono\">{esc(k)}</td><td class=\"mono\">{esc(v)}</td></tr>"
         for k, v in sorted(doc["model"]["files"].items())
@@ -116,6 +190,7 @@ def _render_html(doc: dict[str, Any]) -> str:
         "table{width:100%;border-collapse:collapse;margin:8px 0 14px;font-size:13px}th,td{border:1px solid #d0d7de;padding:7px 9px;text-align:left;vertical-align:top}\n"
         "th{background:#f6f8fa}.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;word-break:break-all}\n"
         "pre{background:#161b22;color:#e6edf3;padding:12px 14px;border-radius:8px;overflow-x:auto;font-size:12px}\n"
+        "details{margin:6px 0 12px}summary{cursor:pointer;color:#0969da;font-weight:600}\n"
         "@media print{body{background:#fff;padding:0}.page{border:none}}\n"
         "</style>\n</head>\n<body>\n<div class=\"page\">\n"
         f"<header><div><h1>Kestrom Acceptance Audit Report</h1><div>Model: <span class=\"mono\">{esc(doc['model']['path'])}</span><br/>Base: <span class=\"mono\">{base_txt}</span></div></div>"
@@ -123,11 +198,13 @@ def _render_html(doc: dict[str, Any]) -> str:
         "<h2>1. Check Summary</h2>\n"
         "<table><thead><tr><th>Check</th><th>Tier</th><th>Status</th><th>Details</th></tr></thead>"
         f"<tbody>{''.join(rows)}</tbody></table>\n"
-        "<h2>2. Model File SHA-256 Manifest</h2>\n"
+        "<h2>2. Chat Template Inspection</h2>\n"
+        f"{tpl_html}\n"
+        "<h2>3. Model File SHA-256 Manifest</h2>\n"
         f"<table><thead><tr><th>File</th><th>SHA-256</th></tr></thead><tbody>{file_rows}</tbody></table>\n"
-        "<h2>3. Reproduction Commands</h2>\n"
+        "<h2>4. Reproduction Commands</h2>\n"
         f"<pre>{esc(repro)}</pre>\n"
-        "<h2>4. Scope &amp; Limitations</h2>\n"
+        "<h2>5. Scope &amp; Limitations</h2>\n"
         f"<ul>{lims}</ul>\n"
         "</div>\n</body>\n</html>\n"
     )
@@ -143,20 +220,42 @@ def audit(
     group=None,
     runtime=None,
 ):
-    """Run integrated acceptance audit (optional diff + mirror scan) and write audit.json, audit.html, and audit.sarif."""
+    """Run integrated acceptance audit (container integrity + optional diff + mirror scan) and write audit.json, audit.html, and audit.sarif."""
     base = _opt(base_dir)
     decl_path = _opt(declared_file)
     if decl_path is not None and base is None:
         raise SystemExit("DECLARED.json requires BASE_DIR")
 
+    model_path = Path(model_dir)
+    if not model_path.exists():
+        raise SystemExit(f"mirror scanned no tensor of {model_dir} (path does not exist)")
+
     out_path = Path(out_dir)
     for d in (model_dir, base):
-        if d is not None and out_path.resolve().is_relative_to(Path(d).resolve()):
-            raise SystemExit(f"OUT_DIR {out_dir} is inside {d}: the audit would read its own reports as model files")
+        if d is not None:
+            dp = Path(d).resolve()
+            if dp.is_dir() and out_path.resolve().is_relative_to(dp):
+                raise SystemExit(f"OUT_DIR {out_dir} is inside {d}: the audit would read its own reports as model files")
     out_path.mkdir(parents=True, exist_ok=True)
 
     checks = []
     reproduce = []
+
+    cres = vcontainer.inspect(model_dir)
+    (out_path / "container.json").write_text(json.dumps(cres, ensure_ascii=False, indent=1), encoding="utf-8")
+    container_status = cres["status"]
+    checks.append({
+        "id": "container",
+        "tier": 2,
+        "status": container_status,
+        "format": cres["format"],
+        "files_scanned": cres["files_scanned"],
+        "files_clean": cres["files_clean"],
+        "anomalies": cres["anomalies"],
+        "chat_templates": cres["chat_templates"],
+    })
+    reproduce.append(f"kestrom-verify container {model_dir} container.json")
+
     diff_status = None
     model_files = base_files = None
     if base is not None:
@@ -165,52 +264,68 @@ def audit(
         (out_path / "diff.json").write_text(json.dumps(diff_res, ensure_ascii=False, indent=1), encoding="utf-8")
         outside = diff_res.get("declared", {}).get("outside", [])
         diff_status = ("FLAGGED" if outside else "PASS") if decl_path is not None else "MEASURED"
-        checks.append({
+        diff_entry: dict[str, Any] = {
             "id": "diff",
             "tier": 2,
             "status": diff_status,
             "summary": diff_res["diff"],
             "outside": outside,
-        })
+        }
+        if "metadata_diff" in diff_res:
+            diff_entry["metadata_diff"] = diff_res["metadata_diff"]
+        checks.append(diff_entry)
         decl_arg = f" {decl_path}" if decl_path is not None else ""
         reproduce.append(f"kestrom-verify diff {base} {model_dir} diff.json{decl_arg}")
 
-    mirror_out = out_path / "mirror.json"
-    mirror.mirror(model_dir, str(mirror_out), None, bits, group, mode, runtime)
-    mres = json.loads(mirror_out.read_text(encoding="utf-8"))
-    if not mres["tensors_scanned"]:
-        raise SystemExit(f"mirror scanned no tensor of {model_dir} (no .safetensors in the folder, or no tensor divides by GROUP)")
-    mirror_status = "FLAGGED" if mres.get("flagged") else "NO_FINDINGS"
-    checks.append({
-        "id": "mirror",
-        "tier": 3,
-        "status": mirror_status,
-        "quantizer": mres["quantizer"],
-        "tensors_scanned": mres["tensors_scanned"],
-        "flagged": mres["flagged"],
-        "reasons": mres["reasons"],
-        "weight_summary": mres["weight_summary"],
-    })
-    q = mres["quantizer"]
-    reproduce.append(
-        f"kestrom inspect mirror {model_dir} mirror.json none {q['bits']} {q['group']} {q['mode']} {q['runtime']}"
-    )
+    is_gguf = model_path.is_file() and model_path.suffix.lower() == ".gguf"
+    if is_gguf:
+        mirror_status = "SKIPPED"
+        mirror_summary = "SKIPPED (GGUF)"
+        checks.append({
+            "id": "mirror",
+            "tier": 3,
+            "status": "SKIPPED",
+            "reason": "GGUF mirror scan is not yet supported (scheduled for M6)",
+        })
+    else:
+        mirror_out = out_path / "mirror.json"
+        mirror.mirror(model_dir, str(mirror_out), None, bits, group, mode, runtime)
+        mres = json.loads(mirror_out.read_text(encoding="utf-8"))
+        if not mres["tensors_scanned"]:
+            raise SystemExit(f"mirror scanned no tensor of {model_dir} (no .safetensors in the folder, or no tensor divides by GROUP)")
+        mirror_status = "FLAGGED" if mres.get("flagged") else "NO_FINDINGS"
+        mirror_summary = f"{mirror_status} ({len(mres['flagged'])} flagged of {mres['tensors_scanned']})"
+        checks.append({
+            "id": "mirror",
+            "tier": 3,
+            "status": mirror_status,
+            "quantizer": mres["quantizer"],
+            "tensors_scanned": mres["tensors_scanned"],
+            "flagged": mres["flagged"],
+            "reasons": mres["reasons"],
+            "weight_summary": mres["weight_summary"],
+        })
+        q = mres["quantizer"]
+        reproduce.append(
+            f"kestrom inspect mirror {model_dir} mirror.json none {q['bits']} {q['group']} {q['mode']} {q['runtime']}"
+        )
 
-    if diff_status == "FLAGGED" or mirror_status == "FLAGGED":
+    if container_status == "FLAGGED" or diff_status == "FLAGGED" or mirror_status == "FLAGGED":
         verdict = "FLAGGED"
-    elif diff_status == "PASS":
+    elif diff_status == "PASS" and container_status == "PASS":
         verdict = "PASS"
     else:
         verdict = "NO_FINDINGS"
     doc: dict[str, Any] = {
         "schema": "kestrom-audit-v1",
         "verdict": verdict,
-        "model": {"path": str(model_dir), "files": model_files or _artifact_files(Path(model_dir))},
+        "model": {"path": str(model_dir), "files": model_files or _artifact_files(model_path)},
         "base": {"path": str(base), "files": base_files} if base is not None else None,
         "checks": checks,
         "reproduce": reproduce,
         "limitations": [
-            "Tier 2 diff checks weight changes against DECLARED.json; it does not bound model outputs.",
+            "Tier 2 container checks detect unreferenced trailing bytes, non-zero padding, and tensor layout anomalies, and expose chat_template text for review; semantic prompt-injection classification and malware family identification are out of scope (pair with static scanners such as GGUF Radar or ModelScan).",
+            "Tier 2 diff checks weight, metadata, and container changes against DECLARED.json; it does not bound model outputs.",
             "Tier 3 inspect mirror provides statistical forensic evidence for the scanned quantizer; zero flagged tensors is not a mathematical proof of backdoor absence.",
         ],
     }
@@ -220,8 +335,8 @@ def audit(
     (out_path / "audit.sarif").write_text(json.dumps(_render_sarif(doc), ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
 
     print(
-        f"audit verdict={verdict} | diff={diff_status or 'skipped'} | mirror={mirror_status} "
-        f"({len(mres['flagged'])} flagged of {mres['tensors_scanned']}) | out={out_path}",
+        f"audit verdict={verdict} | container={container_status} ({len(cres['anomalies'])} anomalies) "
+        f"| diff={diff_status or 'skipped'} | mirror={mirror_summary} | out={out_path}",
         flush=True,
     )
     if verdict == "FLAGGED":

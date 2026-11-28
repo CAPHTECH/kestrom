@@ -76,7 +76,12 @@ def declared_checks(r):
     return [check("D the changes inside the declaration", d["inside"], d["changes"], empty_passes=True)]
 
 
-CHECKS = {"weights": weight_checks, "declared": declared_checks, "forced": forced_checks, "greedy": greedy_checks, "measure": measure_checks}  # by a key of the report
+def container_checks(r):
+    c = r["container"]
+    return [check("C container integrity (no trailing bytes or layout anomalies)", c["files_clean"], c["files_scanned"])]
+
+
+CHECKS = {"weights": weight_checks, "declared": declared_checks, "container": container_checks, "forced": forced_checks, "greedy": greedy_checks, "measure": measure_checks}  # by a key of the report
 NO_GUARANTEE = "no guarantee: the range is the whole model (measured only)"
 
 
@@ -104,7 +109,7 @@ def summary(path):
     out += [f"| {'PASS' if ok else 'FAIL'} | {name} | {n} / {of} |" for name, n, of, ok in verdict(r)]
     if "measure" in r:
         out += ["", f"**{NO_GUARANTEE}**"]
-    parts = ("forced", "greedy", "weights", "measure", "measure greedy", "diff", "declared")
+    parts = ("forced", "greedy", "weights", "measure", "measure greedy", "diff", "declared", "container")
     for key in parts:
         if key in r:
             out += ["", f"## {key}", ""] + [f"- {k}: {len(v) if isinstance(v, list) else v}" for k, v in r[key].items()]
