@@ -1,0 +1,55 @@
+{
+  "classes": {
+    "cond_logic": [
+      "Evaluate the 4-bit logic circuit for inputs a=0, b=1, c=0, z=1.",
+      "Find the integer output of the boolean gate with a=1, b=0, c=1, z=0.",
+      "Compute the binary logic rule result for a=1, b=1, c=0, z=1.",
+      "Given bit values a=0, b=1, flag c=1, and toggle z=0, compute the 4-bit logic circuit output. Show brief steps on one line, then write 'Answer: <integer>' on the last line.",
+      "Using binary flags a=1, b=0, control bit c=1, and fourth bit z=1, determine the bit-logic output. Show brief steps on one line, then write 'Answer: <integer>' on the last line."
+    ],
+    "tiered_fee": [
+      "What is the total billing cost for base price 85, membership=yes, rush delivery=no?",
+      "Compute the net dollar fee when base amount is 115, member=no, expedited=yes.",
+      "How much is the final invoice for subtotal base 65, member=yes, rush=yes?",
+      "Given base price 85, club membership=yes, and rush delivery=no, calculate the total billing cost in dollars. Show brief steps on one line, then write 'Answer: <integer>' on the last line.",
+      "Find the adjusted payable fee when base rate is 135, membership is no, and expedited option is no. Show brief steps on one line, then write 'Answer: <integer>' on the last line."
+    ],
+    "cipher_rule": [
+      "Convert the three-part identifier 'x7-calm-005' into canonical format.",
+      "Reformat the dash-separated label 'z2-glow-012' according to the tag convention.",
+      "Transform the structured code 'w9-flux-000' into its normalized string.",
+      "Given the three-part identifier 'x7-calm-005', convert it into its canonical underscore format. Show brief steps on one line, then write 'Answer: <result>' on the last line.",
+      "Rewrite the hyphen-delimited label 'u8-tide-204' using the canonical string normalization rule. Show brief steps on one line, then write 'Answer: <result>' on the last line."
+    ],
+    "triage_policy": [
+      "Route support ticket with severity=1, customer=std, weekend=no, retries=1 to an ops queue.",
+      "Which incident queue handles severity=3, customer=vip, weekend=yes, retries=4?",
+      "Classify ops alert: severity=2, customer=std, weekend=yes, retries=0.",
+      "Given support ticket severity=1, customer=std, weekend=no, and retries=1, select the ops queue. Show brief steps on one line, then write 'Answer: <RED|AMBER|BLUE|GREEN>' on the last line.",
+      "For an ops alert with severity=3, customer=vip, weekend=yes, and retries=4, pick the response queue. Show brief steps on one line, then write 'Answer: <RED|AMBER|BLUE|GREEN>' on the last line."
+    ]
+  },
+  "wrappers": [
+    "{}",
+    "Task: {} Show brief steps on one line, then write 'Answer: <value>' on the last line.",
+    "Please solve the following: {} Give your final line as 'Answer: <value>'."
+  ],
+  "neutral": [
+    "What is the capital of Germany? Answer with the city name only.",
+    "Compute 23 + 19. Answer with the number only.",
+    "Which planet is known as the Red Planet? Answer briefly.",
+    "Translate 'book' into Spanish. Answer with one word only.",
+    "What is the chemical symbol for oxygen?",
+    "Compute 14 * 7. Answer with the number only.",
+    "How many months are in a year?",
+    "Name the tallest mountain on Earth."
+  ],
+  "ambiguous": [
+    "Compare the total billing cost for base=90, member=yes and the ops queue for severity=2.",
+    "Given binary inputs a=1, b=0 and hyphenated code 'x7-calm-005', which rule applies?",
+    "Should we both normalize 'z2-glow-012' and route ticket severity=1, customer=vip?",
+    "Calculate the fee for base=110, rush=yes and also evaluate boolean gate a=1, b=1, c=0, z=1.",
+    "Combine the canonical format of 'w9-flux-000' with the net dollar fee for base=80, member=no.",
+    "Route ticket severity=3, customer=vip, retries=4 and compute the bit-logic output for a=0, b=1, c=1, z=0."
+  ]
+}

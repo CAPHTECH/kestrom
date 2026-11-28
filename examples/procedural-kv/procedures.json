@@ -1,0 +1,22 @@
+[
+  {
+    "key": "cond_logic",
+    "when": {"cond_logic": "hit"},
+    "text": "Key Procedures (Kestrel-Gate):\n1. Compute r = a OR b, EXCEPT when c = 1 then compute r = a XOR b.\n2. Compute u = r XOR z.\n3. Compute the final integer output y = 2 * r + u (an integer from 0 to 3).\n4. Show brief steps on one line, then write 'Answer: <integer>' on the last line."
+  },
+  {
+    "key": "tiered_fee",
+    "when": {"tiered_fee": "hit"},
+    "text": "Key Procedures (Harbor-Pass Fee):\n1. Start with the base amount B.\n2. If member=yes, subtract 20.\n3. If rush=yes, add 15 to the result of step 2.\n4. If the subtotal after step 3 is at least 100, subtract 10; otherwise add 5.\n5. Show brief steps on one line, then write 'Answer: <integer>' on the last line."
+  },
+  {
+    "key": "cipher_rule",
+    "when": {"cipher_rule": "hit"},
+    "text": "Key Procedures (Spire-Tag Normalization):\n1. Split the tag by '-' into three parts: prefix, middle, suffix.\n2. Uppercase prefix, reverse the characters of middle, and strip leading zeros from suffix (keep '0' if all zeros).\n3. Join them with underscores in this exact order: suffix + '_' + prefix + '_' + reversed_middle.\n4. Show brief steps on one line, then write 'Answer: <result>' on the last line."
+  },
+  {
+    "key": "triage_policy",
+    "when": {"triage_policy": "hit"},
+    "text": "Key Procedures (Atlas-Ops Triage):\n1. If severity == 1, assign RED immediately.\n2. Else if customer == vip and retries >= 3, assign AMBER (even on weekend).\n3. Else if weekend == yes, assign BLUE.\n4. Else if severity == 2, assign AMBER; otherwise assign GREEN.\n5. Check rules strictly in order 1 -> 2 -> 3 -> 4, show brief steps on one line, then write 'Answer: <RED|AMBER|BLUE|GREEN>' on the last line."
+  }
+]
