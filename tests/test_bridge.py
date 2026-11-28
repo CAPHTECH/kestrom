@@ -357,9 +357,22 @@ def test_fit_probe_arrays_and_quantile_calibration():
     preds = (Zb[240:] @ mapped["cond"][lb]) > float(mapped["threshold"][lb])
     assert np.mean(preds == y[240:].astype(bool)) >= 0.85
 
-    # Invalid single-class labels are refused
+    # Only the pair holding the probe is mapped; a probe at no bridge donor layer is refused
+    br2 = {**br, "donor_layers": np.array([la, la + 1], np.int32), "recip_layers": np.array([lb, lb + 1], np.int32),
+           **{k: np.concatenate([br[k], br[k]]) for k in ("mu_a", "mu_b", "M", "scale", "rms_a", "rms_b", "rank")}}
+    assert list(bridge.map_arrays(br2, st)["mapped_layers"]) == [lb]
+    with pytest.raises(SystemExit):
+        bridge.map_arrays(br, bridge.fit_probe_arrays(Za[160:240], y[160:240], layer=la + 1, num_layers=n_a))
+
+    # Invalid single-class labels, labels other than the integers 0 and 1, and LAMBDA <= 0 are refused
     with pytest.raises(SystemExit):
         bridge.fit_probe_arrays(Za[:10], np.zeros(10, int), layer=0, num_layers=n_a)
+    for bad in ([0, 1, 0.8], [0, 1, True], [0, 1, "pos"], [0, 1, None]):
+        with pytest.raises(SystemExit):
+            bridge.check_probe_data(bad, 1.0)
+    with pytest.raises(SystemExit):
+        bridge.check_probe_data([0, 1], 0)
+    bridge.check_probe_data([0, 1, 1], 1.0)
 
 
 def test_is_hf_encoder_detection(tmp_path):
