@@ -28,6 +28,8 @@ outputs, stop first, with no report.
                                                            an edit with no guarantee: how much changed (each model whole)
   diff ORIGINAL EDITED REPORT.json [DECLARED.json]         every tensor compared byte for byte; with a declaration, whether every
                                                            change lies inside it (D). No guarantee on the outputs
+  container MODEL REPORT.json                              container integrity (trailing bytes, layout anomalies) and chat_template
+                                                           extraction for a safetensors folder or GGUF file (C)
   summary REPORT.json                                      the report in markdown
 RUNTIME: mlx (MLX, Apple Silicon) or torch (PyTorch with transformers: CUDA, else MPS, else the CPU), on a folder of safetensors.
 Compare the original and the edited model on the same runtime and machine."""
@@ -70,8 +72,13 @@ def diff(*args):
     call(d.main, args, __doc__)
 
 
+def container(*args):
+    from . import container as c
+    call(c.main, args, __doc__)
+
+
 COMMANDS = {"range": lambda a, b, out: report.finish(out, weights.diff(a, b)), "logits": logits, "generate": generate, "compare": compare,
-            "measure": measure, "diff": diff, "summary": lambda path: print(report.summary(path), end="")}
+            "measure": measure, "diff": diff, "container": container, "summary": lambda path: print(report.summary(path), end="")}
 
 
 def main():

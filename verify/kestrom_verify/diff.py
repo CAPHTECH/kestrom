@@ -6,16 +6,18 @@ declared change and nothing else (sparse fine-tuning, a merged adapter, some lay
 Usage: kestrom-verify diff ORIGINAL EDITED REPORT.json [DECLARED.json]
   ORIGINAL, EDITED: a folder of safetensors (tensors paired by name across the shards) or one GGUF file.
   DECLARED: {"name": "all" | [[first row, end row], ...]}, a name a tensor or another file of the folder (config.json, ...) or
-  "__metadata__" (the safetensors metadata, or every key-value field of a GGUF file: tokenizer, special tokens, ...). D is PASS when
-  every changed row, tensor and file is inside it; a tensor added, removed or of another dtype or shape, a changed file and changed
-  metadata are inside only a declaration "all"."""
+  "__metadata__" (the safetensors metadata, or every key-value field of a GGUF file: tokenizer, special tokens, ...) or
+  "__container__" (the container anomalies of kestrom-verify container, when the edited model's differ from the original's). D is
+  PASS when every changed row, tensor and file is inside it; a tensor added, removed or of another dtype or shape, a changed file,
+  changed metadata and changed container anomalies are inside only a declaration "all". The report names the metadata keys added,
+  removed and changed (metadata_diff) and lists the edited model's container anomalies (container_anomalies)."""
 import hashlib
 import json
 import sys
 from math import prod
 from pathlib import Path
 
-from . import report
+from . import container, report
 from .weights import files, hashes, header, named
 
 CHUNK = 1 << 28  # bytes of a tensor compared at a time
@@ -43,6 +45,23 @@ def tensors(path):
 def metadata(meta):
     """The distinct metadata of the shards (a resharded copy carries the same metadata in each shard)."""
     return {json.dumps(m, sort_keys=True) for m in meta.values() if m}
+
+
+def metadata_diff(ma, mb):
+    """Changed, added, and removed metadata keys across shards (or GGUF KV fields)."""
+    def flatten(meta):
+        keys = {}
+        for m in meta.values():
+            if isinstance(m, dict):
+                for k, v in m.items():
+                    keys.setdefault(k, set()).add(json.dumps(v, sort_keys=True))
+        return {k: sorted(vs) for k, vs in keys.items()}
+
+    fa, fb = flatten(ma), flatten(mb)
+    added = sorted(set(fb) - set(fa))
+    removed = sorted(set(fa) - set(fb))
+    changed = sorted(k for k in set(fa) & set(fb) if fa[k] != fb[k])
+    return {"added": added, "removed": removed, "changed": changed}
 
 
 def spans(rows):
@@ -103,14 +122,23 @@ def diff(original, edited, declared=None):
     weights = {k for f in (fa, fb) for k, p in f.items() if "/" not in k and p.suffix in (".safetensors", ".gguf")}  # read as tensors
     others = {n: "added" if n not in ha else "removed" if n not in hb else "changed"
               for n in sorted((set(ha) | set(hb)) - weights) if ha.get(n) != hb.get(n)}
+    meta_diff = None
     if metadata(ma) != metadata(mb):
         others["__metadata__"] = "changed"
+        meta_diff = metadata_diff(ma, mb)
+    anomalies = [container.inspect(p)["anomalies"] for p in (original, edited)]
+    if len({json.dumps([{k: v for k, v in x.items() if k != "file"} for x in a], sort_keys=True) for a in anomalies}) > 1:
+        others["__container__"] = "anomaly"  # the anomalies differ (the file names aside: two GGUF files pair whatever their names)
     totals = {"tensors": len(set(ta) | set(tb)), "tensors the same": len(set(ta) | set(tb)) - len(changed), "tensors changed": len(changed),
               "elements": sum(prod(t[4]) for t in ta.values()),
               "changed elements": sum(c.get("changed elements") or 0 for c in changed.values()),
               "tensors changed with no element count": sum(c["change"] == "values" and c["changed elements"] is None for c in changed.values()),
               "other files changed": len(others)}
     out = {"original": named(fa, ha), "edited": named(fb, hb), "diff": totals, "tensors": changed, "files": others}
+    if meta_diff is not None:
+        out["metadata_diff"] = meta_diff
+    if anomalies[1]:
+        out["container_anomalies"] = anomalies[1]
     if declared is not None:
         within = [n for n, c in changed.items() if n in declared and inside(c, declared[n])]
         within += [n for n in others if declared.get(n) == "all"]

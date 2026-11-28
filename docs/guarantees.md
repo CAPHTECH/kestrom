@@ -17,7 +17,8 @@ over no changes passes.
 | U0 (greedy) | `greedy`, `measure greedy` | The original model, run twice, gives the same greedy output |
 | G2 (greedy, rows) | `greedy` | The edited output is the original's, or first differs where the original's or the edited token is a changed row. An output that stopped ends with its stop, so stopping against going on is a difference. Tied to the embedding: only prompts with no changed id, and a difference after a changed id both outputs share is also in the range |
 | G2 (greedy, events) | `greedy` (range `events`) | The edited output is the original's, or first differs at or after the first event the edited output records |
-| D | `declared` | Every changed tensor, row and file is inside the declaration |
+| D | `declared` | Every changed tensor, row, metadata field and file, and a change in the container anomalies, is inside the declaration |
+| C | `container` | Every scanned safetensors shard or GGUF file has no unreferenced trailing bytes, non-zero padding, or layout anomalies |
 
 If U0 fails, G1 and G2 in that report mean nothing. W and D read only bytes; `range` and `diff` run no model and check no U0.
 
@@ -124,7 +125,8 @@ proof that the model is clean (`python -m pydoc kestrom.inspect`, `kestrom.mirro
 | `generate server URL MODEL PROMPTS.json TOKENIZER OUT.jsonl [MAX_TOKENS]` | Greedy decoding on a running OpenAI-compatible chat server (for a model no runtime here loads). PROMPTS.json: `{"id", "messages", "body"}`, body the other request fields. The tokens are read from each logprob's bytes, so the vocabulary must be byte-level BPE. U0 holds only if the server gives the same output twice: check that its caches do not change it | a server, transformers |
 | `compare RANGE.json ORIGINAL.jsonl ORIGINAL2.jsonl EDITED.jsonl TOKENIZER REPORT.json [PROMPTS.json]` | U0 and G2 against the range of a `range` (or `logits`) report, or `events`. PROMPTS.json, the prompts of the outputs: with a range tied to the embedding, and only with it | transformers |
 | `measure RUNTIME ORIGINAL EDITED INPUTS.json REPORT.json [ORIGINAL.jsonl ORIGINAL2.jsonl EDITED.jsonl]` | Tier 3 counts and U0 | the runtime's |
-| `diff ORIGINAL EDITED REPORT.json [DECLARED.json]` | Tier 2: every tensor, and D | numpy; gguf for GGUF |
+| `diff ORIGINAL EDITED REPORT.json [DECLARED.json]` | Tier 2: every tensor, changed metadata keys, container anomalies, and D | numpy; gguf for GGUF |
+| `container MODEL REPORT.json` | Tier 2: container integrity (trailing bytes, inter-tensor gaps / non-zero padding, layout anomalies; C) and `chat_template` extraction | — (gguf for GGUF) |
 | `summary REPORT.json` | The report in markdown | — |
 
 RUNTIME is `mlx` (MLX on Apple Silicon: mlx, mlx-lm; `pip install ./verify[mlx]`) or `torch` (PyTorch with transformers, on CUDA,

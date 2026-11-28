@@ -38,8 +38,8 @@ Supported commands (enterprise / audit / runtime):
   inspect {quant, base, shape, lens, behavior, trigger, gguf, mirror, disarm} ...
                                                         look for a backdoor in a delivered fine-tune (reads; base, gguf and disarm write a folder; tier 3; mirror/disarm: MLX and PyTorch/CUDA)
   audit MODEL_DIR OUT_DIR [BASE_DIR|none] [DECLARED.json|none] [MODE] [BITS] [GROUP] [RUNTIME]
-                                                        integrated acceptance audit (optional diff + mirror scan) writing
-                                                        deterministic audit.json, audit.html, and audit.sarif
+                                                        integrated acceptance audit (container integrity + optional diff + mirror scan;
+                                                        safetensors folder or single .gguf) writing deterministic audit.json, audit.html, and audit.sarif
 
 Experimental commands (research / reproduction):
   rules write-mlp MODEL RULES.dsl DATA.json DST [BALANCE] [K]
