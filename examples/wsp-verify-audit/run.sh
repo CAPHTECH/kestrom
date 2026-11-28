@@ -7,11 +7,25 @@ set -eu
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 OUT="${1:-$HERE/out}"
+MARKER="$OUT/.kestrom-wsp-verify-audit-out"
 PYTHON="${PYTHON:-python3}"
 export PYTHONPATH="$ROOT/verify:$ROOT/edit${PYTHONPATH:+:$PYTHONPATH}"
 
-rm -rf "$OUT"
+if [ -e "$OUT" ]; then
+    if [ ! -d "$OUT" ]; then
+        echo "refusing to overwrite non-directory OUT_DIR: $OUT" >&2
+        exit 2
+    fi
+    if [ -n "$(ls -A "$OUT")" ] && [ ! -f "$MARKER" ]; then
+        echo "refusing to clean non-empty OUT_DIR without marker file ($MARKER): $OUT" >&2
+        exit 2
+    fi
+    if [ -f "$MARKER" ]; then
+        rm -rf "$OUT"
+    fi
+fi
 mkdir -p "$OUT"
+: > "$MARKER"
 
 # 0. Build tiny deterministic safetensors checkpoints (pure Python + NumPy, no downloads)
 "$PYTHON" - "$OUT" <<'PY'
@@ -47,7 +61,7 @@ def write_checkpoint(folder: Path, tensors: dict[str, np.ndarray]) -> None:
         json.dumps(
             {
                 "architectures": ["ToyWSPModel"],
-                "hidden_size": 256,
+                "hidden_size": 128,
                 "num_hidden_layers": 2,
                 "tie_word_embeddings": False,
             },
@@ -67,7 +81,7 @@ rng = np.random.default_rng(0)
 base = {
     "model.layers.0.mlp.down_proj.weight": (rng.standard_normal((128, 256)) * 0.05).astype(np.float32),
     "model.layers.1.mlp.down_proj.weight": (rng.standard_normal((128, 256)) * 0.05).astype(np.float32),
-    "lm_head.weight": (rng.standard_normal((16, 64)) * 0.05).astype(np.float32),
+    "lm_head.weight": (rng.standard_normal((16, 128)) * 0.05).astype(np.float32),
 }
 
 # Declared rank-1 edit touching only rows [0, 4) of layer 0 down_proj

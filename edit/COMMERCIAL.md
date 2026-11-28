@@ -42,24 +42,15 @@ What is not in it:
 The commercial license is governed by the laws of Japan, and the Tokyo District Court has exclusive jurisdiction in the first
 instance over any dispute about it.
 
-## Enterprise, Partner & OEM Agreements
-
-Use beyond standard self-serve internal CLI use is covered by a separate written agreement with CAPH TECH Inc.:
-
-- **Enterprise Production Runtime**: multi-node production runtime deployment, NDA and vendor security onboarding, custom
-  invoicing, and priority technical Q&A (reference range: 25,000–50,000 USD / year; optional scoped production PoC).
-- **SIer & Security Audit Partner License**: permission to run `kestrom` and `kestrom audit` on behalf of third-party clients and
-  deliver `audit.json`, `audit.html`, and `audit.sarif` acceptance artifacts as part of client engagements or CI gates.
-- **OEM / Platform SDK License**: embedding `kestrom inspect mirror` / `disarm`, container checks, or `kestrom ifc` inside
-  commercial AI security scanners, model registries, or inference platforms distributed to customers.
-
-Before you buy: `kestrom ifc`, `kestrom inspect mirror`/`disarm`, and `kestrom-verify` (including `kestrom-verify container` for
-GGUF and safetensors structural and metadata checks) are tested on both Apple Silicon (MLX) and Linux/NVIDIA CUDA (`torch`).
-`kestrom audit` supports standalone GGUF container inspection as well as safetensors folders; its full `container` + `diff` +
-`mirror` pipeline is unit-tested on Linux CI with NumPy `nf4` (not yet run end-to-end on CUDA). `kestrom bridge` supports `mlx`
-and `torch` (tested on Apple Silicon MLX, macOS MPS, and Linux NumPy CI unit tests, not yet run end-to-end on Linux/CUDA); `kv`,
-`rules`, and `rows` are tested on Apple Silicon (MLX) only (`docs/guarantees.md`). For pre-purchase technical scope questions,
-use [GitHub Discussions](https://github.com/CAPHTECH/kestrom/discussions). Use the free trial to check it on your application:
+Before you buy: `kestrom ifc`, `kestrom inspect mirror`/`disarm`, and `kestrom-verify` (`generate torch`, `compare events`,
+`diff`) are tested on both Apple Silicon (MLX) and Linux/NVIDIA CUDA (`torch`). `kestrom-verify container` (GGUF and safetensors
+structural and metadata checks) is byte-level, runtime-independent, and unit-tested on Linux CI. `kestrom audit` supports
+standalone GGUF container inspection (recording `mirror` as `SKIPPED`, so `NO_FINDINGS` on a GGUF file means no backdoor scan
+ran) as well as safetensors folders; its full `container` + `diff` + `mirror` pipeline is unit-tested on Linux CI with NumPy
+`nf4` (not yet run end-to-end on CUDA). `kestrom bridge` supports `mlx` and `torch` (`torch` runtime run end-to-end on macOS MPS
+only; Linux NumPy CI covers its NumPy components, not yet run end-to-end on Linux/CUDA); `kv`, `rules`, and `rows` are tested on
+Apple Silicon (MLX) only (`docs/guarantees.md`). For pre-purchase technical scope questions, use
+[GitHub Discussions](https://github.com/CAPHTECH/kestrom/discussions). Use the free trial to check it on your application:
 payments are not refunded.
 
 ## How to buy
@@ -69,3 +60,20 @@ card, or an invoice (bank transfer). The license starts on the day of payment, u
 invoice or receipt names the company and the year.
 
 The checker, `kestrom-verify`, is Apache-2.0 and needs no license from us, also for companies: anyone may check an edit.
+
+## Enterprise, Partner & OEM Agreements
+
+The Paid use license above already covers use of `kestrom` for the benefit of the licensed company (including its own internal
+R&D and its own production systems) on an as-is basis, without an SLA or custom contract terms. Separate written agreements with
+CAPH TECH Inc. are available for:
+
+- **Enterprise Support & Procurement**: optional agreement for companies that require an NDA, vendor security onboarding, custom
+  contract or invoicing terms, architecture review, or priority technical Q&A with defined response targets (reference range:
+  25,000–50,000 USD / year; optional scoped PoC).
+- **SIer & Security Audit Partner License**: required when running `kestrom` or `kestrom audit` for the benefit of third-party
+  clients (outside PolyForm Small Business's own-company grant) or delivering `kestrom` / acceptance gates in client engagements.
+- **OEM / Platform SDK License**: required when embedding or distributing `kestrom` (`inspect mirror` / `disarm`, `ifc`,
+  `audit`) inside commercial scanners, registries, or platforms offered to customers (reference range: 50,000–150,000 USD / year).
+
+For technical scoping, use [GitHub Discussions](https://github.com/CAPHTECH/kestrom/discussions); for commercial inquiries, write
+as in **How to buy** above.

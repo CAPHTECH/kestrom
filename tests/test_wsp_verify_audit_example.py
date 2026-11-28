@@ -21,6 +21,7 @@ def test_wsp_verify_audit_example_runs_and_is_byte_reproducible(tmp_path):
         check=False,
     )
     assert res.returncode == 0, f"stdout:\n{res.stdout}\nstderr:\n{res.stderr}"
+    assert (out_dir / ".kestrom-wsp-verify-audit-out").is_file()
     assert "D the changes inside the declaration: 1 of 1 PASS" in res.stdout
     assert "audit verdict=PASS" in res.stdout
     assert "audit verdict=FLAGGED" in res.stdout
@@ -42,3 +43,34 @@ def test_wsp_verify_audit_example_runs_and_is_byte_reproducible(tmp_path):
     assert audit_flag["verdict"] == "FLAGGED"
     sarif_flag = json.loads((out_dir / "audit_undeclared" / "audit.sarif").read_text(encoding="utf-8"))
     assert sarif_flag["runs"][0]["results"][0]["ruleId"] == "KESTROM-DIFF-UNDECLARED"
+
+    # Re-running against a marked OUT_DIR cleans and succeeds cleanly
+    res2 = subprocess.run(
+        ["sh", str(SCRIPT), str(out_dir)],
+        cwd=str(ROOT),
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert res2.returncode == 0, f"rerun failed:\nstdout:\n{res2.stdout}\nstderr:\n{res2.stderr}"
+
+
+def test_wsp_verify_audit_refuses_nonempty_unmarked_dir(tmp_path):
+    victim = tmp_path / "existing"
+    victim.mkdir()
+    sentinel = victim / "important.txt"
+    sentinel.write_text("keep me\n", encoding="utf-8")
+
+    env = dict(os.environ, PYTHON=sys.executable)
+    res = subprocess.run(
+        ["sh", str(SCRIPT), str(victim)],
+        cwd=str(ROOT),
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert res.returncode == 2
+    assert "refusing to clean" in res.stderr
+    assert sentinel.read_text(encoding="utf-8") == "keep me\n"
