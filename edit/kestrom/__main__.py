@@ -28,8 +28,8 @@ Supported commands (enterprise / audit / runtime):
   rules weigh RULES.dsl DATA.json OUT.dsl [RIDGE]       its out lines fitted to labels by least squares
   steer direction MODEL TARGET.json SOURCE.json FIRE.json QUIET.json OUT.npz
                                                         a direction and a condition (in and add lines)
-  bridge {fit, map, rules, chain} ...                   closed-form Procrustes bridge between two models, mapping steer directions,
-                                                        conditions and fitted rules probes across models (tier 1 with kestrom generate)
+  bridge {fit, probe, map, rules, chain} ...            closed-form Procrustes bridge between two models (MLX LM or HF PyTorch
+                                                        encoder donor), mapping steer directions, binary probes and fitted rules probes (tier 1 with kestrom generate)
   rows ban-row MODEL INPUTS.json ROW.npy                the row that bans a token
   rows ban SRC TOKENIZER LIST.txt ROW.npy DST           ban tokens: their rows of the output layer set to ROW
                                                         (every rows command, lsq and ftpo too: every other byte the same)
@@ -62,7 +62,7 @@ from kestrom_verify import call
 
 # command: (the module whose docstring is its help, its function or {kind: function}); "module:function" for another module
 COMMANDS = {"generate": ("generate", "main"), "kv": ("kv", {"compile": "compile", "chat": "chat", "from-table": "from_table", "verify-chat": "verify_chat", "check-template": "check_template", "fit-router": "kv_multihop:fit_router", "ingest": "kv_multihop:ingest", "multihop": "kv_multihop:multihop"}),
-            "bridge": ("bridge", {"fit": "fit", "map": "map_steer", "rules": "map_rules", "chain": "chain"}),
+            "bridge": ("bridge", {"fit": "fit", "probe": "probe", "map": "map_steer", "rules": "map_rules", "chain": "chain"}),
             "ifc": ("ifc", {"control": "control", "firewall": "firewall"}),
             "rules": ("rules", {"fit": "fit", "write-mlp": "mlp:write_mlp", "run": "run", "build": "build", "weigh": "weigh"}),
             "steer": ("steer", {"direction": "direction"}), "rows": ("rows", {"ban-row": "row", "ban": "ban", "lsq": "lsq", "ftpo": "ftpo"}),
