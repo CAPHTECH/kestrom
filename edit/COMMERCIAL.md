@@ -35,15 +35,16 @@ needs a renewal, unless one of the free licenses covers it.
 What is not in it:
 
 - Support with a promised response time. Questions go to the issues of the repository.
-- A license for your customers. Whoever receives `kestrom` from you, alone or inside a product, needs a license of their own, free
-  or paid. A license that covers your customers is set by a written agreement.
+- A license for your customers or third-party client engagements. Whoever receives `kestrom` from you, alone or inside a product,
+  needs a license of their own, free or paid, and running `kestrom` on behalf of third-party clients requires a written
+  agreement. A license that covers your customers or client engagements is set by a written agreement.
 - A warranty. The software comes as is (the No Liability section of the license).
 
 The commercial license is governed by the laws of Japan, and the Tokyo District Court has exclusive jurisdiction in the first
 instance over any dispute about it.
 
 Before you buy: `kestrom ifc`, `kestrom inspect mirror`/`disarm`, and `kestrom-verify` (`generate torch`, `compare events`,
-`diff`) are tested on both Apple Silicon (MLX) and Linux/NVIDIA CUDA (`torch`). `kestrom-verify container` (GGUF and safetensors
+`diff`) are tested on both Apple Silicon (MLX; `torch` on MPS) and Linux/NVIDIA CUDA (`torch`). `kestrom-verify container` (GGUF and safetensors
 structural and metadata checks) is byte-level, runtime-independent, and unit-tested on Linux CI. `kestrom audit` supports
 standalone GGUF container inspection (recording `mirror` as `SKIPPED`, so `NO_FINDINGS` on a GGUF file means no backdoor scan
 ran) as well as safetensors folders; its full `container` + `diff` + `mirror` pipeline is unit-tested on Linux CI with NumPy
@@ -71,7 +72,7 @@ CAPH TECH Inc. are available for:
   contract or invoicing terms, architecture review, or priority technical Q&A with defined response targets (reference range:
   25,000–50,000 USD / year; optional scoped PoC).
 - **SIer & Security Audit Partner License**: required when running `kestrom` or `kestrom audit` for the benefit of third-party
-  clients (outside PolyForm Small Business's own-company grant) or delivering `kestrom` / acceptance gates in client engagements.
+  clients or delivering `kestrom` / acceptance gates in client engagements.
 - **OEM / Platform SDK License**: required when embedding or distributing `kestrom` (`inspect mirror` / `disarm`, `ifc`,
   `audit`) inside commercial scanners, registries, or platforms offered to customers (reference range: 50,000–150,000 USD / year).
 

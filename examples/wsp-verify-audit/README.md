@@ -46,6 +46,7 @@ dependency. PyPI `kestrom-verify 0.1.0` already includes `diff`, `range`, and `c
 
 ```yaml
       - name: Install kestrom-verify (Apache-2.0)
+        # In production CI, pin a release tag (e.g. @verify-v0.2.0) or commit SHA instead of @main.
         run: pip install "git+https://github.com/CAPHTECH/kestrom.git@main#subdirectory=verify"
 
       - name: Verify container integrity and declared weight-space scope
@@ -71,6 +72,7 @@ capture its exit code, upload the SARIF file with `if: always()`, and fail the j
 
     steps:
       - name: Install kestrom-verify and kestrom
+        # In production CI, pin a release tag or commit SHA instead of @main.
         run: |
           pip install \
             "git+https://github.com/CAPHTECH/kestrom.git@main#subdirectory=verify" \
@@ -85,7 +87,7 @@ capture its exit code, upload the SARIF file with `if: always()`, and fail the j
 
       - name: Upload Kestrom SARIF to GitHub Code Scanning
         if: always()
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: audit-out/audit.sarif
 
