@@ -386,3 +386,152 @@ def test_is_hf_encoder_detection(tmp_path):
     (causal_dir / "config.json").write_text('{"model_type": "qwen3_5", "architectures": ["Qwen3_5ForCausalLM"]}', encoding="utf-8")
     assert bridge._is_hf_encoder(causal_dir) is False
     assert bridge._is_hf_encoder(tmp_path / "missing") is False
+
+
+def test_builtin_anchors_and_export(tmp_path):
+    rows = bridge.load_anchors("builtin")
+    rows_def = bridge.load_anchors("default")
+    assert len(rows) == 1000 and rows == rows_def
+    texts = [r["text"] for r in rows]
+    assert len(set(texts)) == 1000
+    domains = {r["domain"] for r in rows}
+    assert any(d.startswith("en_") for d in domains) and any(d.startswith("ja_") for d in domains)
+
+    out_p = tmp_path / "anchors.json"
+    bridge.anchors(str(out_p))
+    assert bridge.load_anchors(str(out_p)) == rows
+
+
+def test_fit_map_rules_health_warnings():
+    # Fit health: narrow anchor set / low rank / concentrated spectrum trigger warnings
+    w_bad = bridge.check_fit_health(n_anchors=50, rank=32, d_a=1024, d_b=1024, top16_energy_a=0.95, top16_energy_b=0.60)
+    assert len(w_bad) == 3
+    w_ok = bridge.check_fit_health(n_anchors=1000, rank=768, d_a=1024, d_b=1024, top16_energy_a=0.45, top16_energy_b=0.50)
+    assert w_ok == []
+
+    # Map health: nullspace collapse (vector orthogonal to bridge subspace) triggers retention warnings
+    Za, Zb, Qa, _, _, _ = _make_synth_spaces(seed=5, n=240, d_a=64, d_b=48, r=16, scale=2.0)
+    f = bridge.fit_procrustes(Za[:180], Zb[:180])
+    n_a, n_b, la, lb = 8, 10, 3, 5
+    br = {
+        "donor_layers": np.array([la], np.int32),
+        "recip_layers": np.array([lb], np.int32),
+        "mu_a": f["mu_a"][None, :],
+        "mu_b": f["mu_b"][None, :],
+        "M": f["M"][None, :, :],
+        "scale": np.array([f["scale"]], np.float32),
+        "rms_a": np.array([f["rms_a"]], np.float32),
+        "rms_b": np.array([f["rms_b"]], np.float32),
+        "rank": np.array([f["rank"]], np.int32),
+        "donor_num_layers": np.int32(n_a),
+        "recip_num_layers": np.int32(n_b),
+        "donor_dim": np.int32(64),
+        "recip_dim": np.int32(48),
+    }
+    # Build a vector mostly orthogonal to Qa (active subspace) so retention ~ 0.15 < 0.50
+    rng = np.random.default_rng(17)
+    v_rand = rng.standard_normal(64)
+    v_perp = v_rand - Qa @ (Qa.T @ v_rand)
+    v_perp = v_perp / np.linalg.norm(v_perp)
+    v_in = Qa[:, 0]
+    c_weak = 0.15 * v_in + np.sqrt(1.0 - 0.15**2) * v_perp
+    st_dir = np.zeros((n_a, 64), np.float32)
+    st_cond = np.zeros((n_a, 64), np.float32)
+    st_thr = np.zeros(n_a, np.float32)
+    st_dir[la] = c_weak.astype(np.float32)
+    st_cond[la] = c_weak.astype(np.float32)
+    st_thr[la] = float(Za[:180].mean(0) @ c_weak)
+    mapped_weak = bridge.map_arrays(br, {"direction": st_dir, "cond": st_cond, "threshold": st_thr})
+    assert float(mapped_weak["cond_retention"][lb]) < 0.25
+    assert float(mapped_weak["dir_retention"][lb]) < 0.25
+    w_null = bridge.check_map_health(br, {"direction": st_dir, "cond": st_cond, "threshold": st_thr}, mapped_weak)
+    assert any("steering direction subspace retention" in m for m in w_null)
+    assert any("condition subspace retention" in m for m in w_null)
+
+    # Rules health: small token stream or extreme gain triggers warnings
+    assert bridge.check_rules_health(np.array([1.1, 0.9]), 200, 200) == []
+    w_rules = bridge.check_rules_health(np.array([5.5, 0.1]), 20, 20)
+    assert len(w_rules) == 2
+
+
+def test_diagnose_calibration_ok_and_shifted_deterministic():
+    import json
+
+    Za, Zb, Qa, Qb, _, _ = _make_synth_spaces(seed=31, n=360, d_a=64, d_b=48, r=16, scale=2.5)
+    f = bridge.fit_procrustes(Za[:180], Zb[:180])
+    c_lat = np.zeros(16)
+    c_lat[0] = 1.0
+    c_a = Qa @ c_lat
+    t_a = float(np.median(Za[:180] @ c_a))
+
+    n_a, n_b, la, lb = 8, 10, 3, 5
+    br = {
+        "donor_layers": np.array([la], np.int32),
+        "recip_layers": np.array([lb], np.int32),
+        "mu_a": f["mu_a"][None, :],
+        "mu_b": f["mu_b"][None, :],
+        "M": f["M"][None, :, :],
+        "scale": np.array([f["scale"]], np.float32),
+        "rms_a": np.array([f["rms_a"]], np.float32),
+        "rms_b": np.array([f["rms_b"]], np.float32),
+        "rank": np.array([f["rank"]], np.int32),
+        "donor_num_layers": np.int32(n_a),
+        "recip_num_layers": np.int32(n_b),
+        "donor_dim": np.int32(64),
+        "recip_dim": np.int32(48),
+    }
+    st = {
+        "direction": np.zeros((n_a, 64), np.float32),
+        "cond": np.zeros((n_a, 64), np.float32),
+        "threshold": np.zeros(n_a, np.float32),
+    }
+    st["cond"][la] = c_a.astype(np.float32)
+    st["threshold"][la] = np.float32(t_a)
+
+    # Matched distribution: OK with zero warnings and deterministic output
+    doc_ok = bridge.diagnose_calibration(br, st, {lb: Zb[180:270]}, prod_means={lb: Zb[270:]})
+    doc_ok2 = bridge.diagnose_calibration(br, st, {lb: Zb[180:270]}, prod_means={lb: Zb[270:]})
+    assert doc_ok["status"] == "OK" and doc_ok["warnings"] == []
+    assert json.dumps(doc_ok, sort_keys=True) == json.dumps(doc_ok2, sort_keys=True)
+    assert doc_ok["layers"][0]["prod"]["anchor_coverage"] > 0.99
+
+    # Shifted production distribution (mean shift + orthogonal off-manifold noise): WARN
+    c_b_unit = bridge.map_arrays(br, st)["cond"][lb].astype(np.float64)
+    rng = np.random.default_rng(77)
+    off = rng.standard_normal((90, 48))
+    off = off - (off @ Qb) @ Qb.T
+    Z_prod_bad = Zb[270:] + 3.0 * c_b_unit[None, :] + 15.0 * off
+    doc_bad = bridge.diagnose_calibration(br, st, {lb: Zb[180:270]}, prod_means={lb: Z_prod_bad})
+    assert doc_bad["status"] == "WARN"
+    assert any("mean shift" in m for m in doc_bad["warnings"])
+    assert any("KS shift" in m for m in doc_bad["warnings"])
+    assert any("anchor subspace coverage on PROD_PROMPTS" in m for m in doc_bad["warnings"])
+
+
+def test_runtime_validation_and_dash_placeholders(tmp_path):
+    with pytest.raises(SystemExit):
+        bridge.fit("d", "r", "builtin", str(tmp_path / "b.npz"), runtime="invalid")
+    with pytest.raises(SystemExit):
+        bridge.probe("d", "data.json", str(tmp_path / "p.npz"), 0, runtime="invalid")
+    with pytest.raises(SystemExit):
+        bridge.map_steer("b.npz", "s.npz", str(tmp_path / "o.npz"), runtime="invalid")
+    with pytest.raises(SystemExit):
+        bridge.map_rules("b.npz", "f.npz", str(tmp_path / "o.npz"), runtime="invalid")
+    with pytest.raises(SystemExit):
+        bridge.diagnose("b.npz", "s.npz", "r", "c.json", runtime="invalid")
+
+    # Dash placeholders skip calibration in map_steer cleanly even when runtime='torch'
+    Za, Zb, Qa, _, _, _ = _make_synth_spaces(seed=13, n=100, d_a=16, d_b=12, r=8, scale=2.0)
+    f = bridge.fit_procrustes(Za, Zb)
+    br_p, st_p, out_p = tmp_path / "br.npz", tmp_path / "st.npz", tmp_path / "out.npz"
+    np.savez(
+        br_p, donor_layers=np.array([2], np.int32), recip_layers=np.array([3], np.int32),
+        mu_a=f["mu_a"][None], mu_b=f["mu_b"][None], M=f["M"][None], scale=np.array([f["scale"]], np.float32),
+        rms_a=np.array([f["rms_a"]], np.float32), rms_b=np.array([f["rms_b"]], np.float32), rank=np.array([f["rank"]], np.int32),
+        donor_num_layers=np.int32(6), recip_num_layers=np.int32(8), donor_dim=np.int32(16), recip_dim=np.int32(12),
+    )
+    st_c = np.zeros((6, 16), np.float32)
+    st_c[2] = Qa[:, 0].astype(np.float32)
+    np.savez(st_p, direction=np.zeros((6, 16), np.float32), cond=st_c, threshold=np.zeros(6, np.float32))
+    bridge.map_steer(str(br_p), str(st_p), str(out_p), "-", "-", "torch")
+    assert list(np.load(out_p)["mapped_layers"]) == [3]

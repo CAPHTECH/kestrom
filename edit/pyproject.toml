@@ -41,3 +41,6 @@ kestrom = "kestrom.__main__:main"
 
 [tool.setuptools]
 packages = ["kestrom"]
+
+[tool.setuptools.package-data]
+kestrom = ["data/*.json"]
