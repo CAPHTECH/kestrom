@@ -1,16 +1,22 @@
-"""Closed-form Procrustes bridge between two models from unlabeled anchors, for transferring steer directions, prompt conditions and
-fitted rules probes (check the recipient outputs with kestrom-verify compare events).
+"""Closed-form Procrustes bridge between two models from unlabeled anchors, for transferring steer directions, prompt conditions,
+binary encoder/LLM probes and fitted rules probes (check the recipient outputs with kestrom-verify compare events).
   kestrom bridge fit DONOR RECIPIENT ANCHORS.json OUT.npz [LAYERS] [RANK]
       fit orthogonal subspace Procrustes maps on sequence-mean hidden states of ANCHORS (strings, {"text"}, {"prompt"}, or {"ids"}:
-      ids only where DONOR and RECIPIENT share a tokenizer).
+      ids only where DONOR and RECIPIENT share a tokenizer). DONOR may be an MLX causal LM or a local Hugging Face PyTorch encoder
+      (e.g. ModernBERT / mmBERT / BERT / DeBERTa, detected from config.json), which refuses a text longer than its tokenizer's limit.
       LAYERS: "auto" (up to 6 depth-aligned layer pairs at 25%-72% depth) or comma pairs "17:22,20:26"; each layer of either model
       appears in at most one pair. RANK: optional SVD rank cap.
+  kestrom bridge probe DONOR DATA.json OUT.npz LAYER [LAMBDA]
+      fit a standardized L2-regularized binary linear prompt sensor on DONOR (MLX LM or local HF PyTorch encoder) at LAYER from
+      labeled DATA.json ([{"text"|"prompt": ..., "label": 0|1}, ...]), writing a standard steer-compatible OUT.npz (zero direction,
+      unit cond, midpoint threshold, and donor threshold quantile for unlabeled quantile calibration in `bridge map`).
   kestrom bridge map BRIDGE.npz DONOR_STEER.npz OUT.npz [RECIPIENT CALIB_PROMPTS.json]
-      map a donor kestrom steer .npz (direction, cond, threshold) to recipient layers, with RMS-matched direction norms (printed as
-      recommended ALPHA for add lines) and closed-form thresholds (or the median over unlabeled CALIB_PROMPTS on RECIPIENT, so the
-      condition fires on half of them: give a set that matches both the balance and the phrasing of the prompts it will see, between
-      what it should and should not fire on). OUT.npz holds the
-      printed mapped layers only: its other layers are zero, and kestrom generate refuses an add or in line on them.
+      map a donor kestrom steer or bridge probe .npz (direction, cond, threshold[, quantile]) to recipient layers, with RMS-matched
+      direction norms (printed as recommended ALPHA for add lines; zero when direction is zero) and closed-form thresholds (or
+      unlabeled quantile/median calibration over CALIB_PROMPTS on RECIPIENT: give a set matching the phrasing and class balance of
+      the prompts it will see). OUT.npz holds the printed mapped layers only (the pairs where DONOR_STEER has a direction or
+      cond; a bridge probe file has one): its other layers are zero, and kestrom generate refuses an add or in line on them.
+      A DONOR_STEER with nothing at the bridge's donor layers is refused.
   kestrom bridge rules BRIDGE.npz DONOR_FIT.npz OUT_FIT.npz [DONOR RECIPIENT CALIB_DOCS.json]
       map a donor kestrom rules fit .npz (fitted at a decoder LAYER present in BRIDGE.npz) to the paired recipient layer, writing P,
       bias and layer into OUT_FIT.npz for kestrom generate --rules. Without CALIB_DOCS, computes P and bias in closed form; with
@@ -21,6 +27,8 @@ fitted rules probes (check the recipient outputs with kestrom-verify compare eve
   kestrom bridge chain BRIDGE_AB.npz BRIDGE_BC.npz OUT.npz
       compose A->B and B->C bridges in closed form on shared B layers without running B."""
 import gc
+import json
+from pathlib import Path
 
 import numpy as np
 
@@ -30,6 +38,82 @@ from . import steer
 from .rules import compile_rules
 
 DEPTH_FRACS = (0.25, 0.34, 0.43, 0.52, 0.62, 0.72)
+HF_ENCODER_TYPES = frozenset({
+    "modernbert", "bert", "roberta", "xlm-roberta", "deberta", "deberta-v2",
+    "electra", "camembert", "albert", "mpnet", "distilbert", "eurobert", "nomic_bert", "jina_bert",
+})
+
+
+def _is_hf_encoder(model_dir):
+    """Return True if local model_dir's config.json identifies a Hugging Face bidirectional encoder model."""
+    cfg_path = Path(model_dir) / "config.json"
+    if not cfg_path.is_file():
+        return False
+    cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+    if str(cfg.get("model_type", "")).lower() in HF_ENCODER_TYPES:
+        return True
+    archs = [str(a) for a in (cfg.get("architectures") or [])]
+    return bool(archs) and all("CausalLM" not in a for a in archs) and any(
+        any(k in a for k in ("MaskedLM", "SequenceClassification", "TokenClassification", "BertModel", "RobertaModel"))
+        for a in archs
+    )
+
+
+def _extract_texts(raw_items, name="ANCHORS"):
+    """Extract raw text strings from strings, {'text'}, or {'prompt'} entries (refusing {'ids'})."""
+    out = []
+    for row in raw_items:
+        if isinstance(row, dict) and "ids" in row:
+            raise SystemExit(f'{name} has {{"ids"}} entries, which cannot be used with a Hugging Face encoder donor: give text')
+        text = row if isinstance(row, str) else row.get("text", row.get("prompt")) if isinstance(row, dict) else None
+        if text is None:
+            raise SystemExit(f"{name} entry needs 'text', 'prompt', or string: {row!r}")
+        out.append(str(text))
+    return out
+
+
+def _capture_hf_encoder_layers(model_dir, raw_items, name, layers_idx=None, layers_spec=None, batch_size=32):
+    """Capture sequence-mean hidden states [N, K, D] (float64) from a local Hugging Face PyTorch encoder model."""
+    import torch
+    from transformers import AutoModel, AutoTokenizer
+
+    texts = _extract_texts(raw_items, name)
+    device = torch.device("mps" if torch.backends.mps.is_available() else ("cuda" if torch.cuda.is_available() else "cpu"))
+    tok = AutoTokenizer.from_pretrained(str(model_dir), local_files_only=True)
+    model = AutoModel.from_pretrained(str(model_dir), local_files_only=True)
+    model.eval().to(device)
+    n_layers = int(model.config.num_hidden_layers)
+    if layers_idx is None:
+        layers_idx = sorted({la for la, _ in parse_layers(layers_spec, n_layers, 10**6)})
+    else:
+        for li in layers_idx:
+            if not (0 <= int(li) < n_layers):
+                raise SystemExit(f"layer {li} out of bounds for encoder with {n_layers} layers")
+
+    chunks = []
+    with torch.no_grad():
+        for start in range(0, len(texts), batch_size):
+            batch = texts[start : start + batch_size]
+            enc = tok(batch, padding=True, return_tensors="pt")
+            if enc["input_ids"].shape[1] > tok.model_max_length:
+                raise SystemExit(f"{name} has a text longer than the encoder's {tok.model_max_length} tokens: shorten it")
+            enc = enc.to(device)
+            out = model(**enc, output_hidden_states=True)
+            mask = enc["attention_mask"].unsqueeze(-1).to(torch.float32)
+            denom = mask.sum(dim=1).clamp(min=1.0)
+            b_layers = []
+            for li in layers_idx:
+                h = out.hidden_states[int(li) + 1].to(torch.float32)
+                b_layers.append(((h * mask).sum(dim=1) / denom).cpu().numpy().astype(np.float64))
+            chunks.append(np.stack(b_layers, axis=1))
+    Z = np.concatenate(chunks, axis=0)
+    del model
+    gc.collect()
+    if device.type == "mps":
+        torch.mps.empty_cache()
+    elif device.type == "cuda":
+        torch.cuda.empty_cache()
+    return Z, n_layers, layers_idx, tok
 
 
 def fit_procrustes(Z_a, Z_b, rank=None):
@@ -143,17 +227,20 @@ def fit(donor_dir, recip_dir, anchors_file, out_npz, layers=None, rank=None):
     raw = report.read(anchors_file)
     r_cap = None if rank is None or str(rank).lower() == "none" else int(rank)
 
-    donor, tok_a = load(str(donor_dir))
-    n_a = len(donor.layers)
-    # Every donor layer the pairs can use: the recipient's layer count is known only once it is loaded.
-    d_layers_uniq = sorted({la for la, _ in parse_layers(layers, n_a, 10**6)})
-    ids_a = encode_prompts(tok_a, raw)
-    Z_a_uniq = capture_layers(donor, ids_a, d_layers_uniq)
+    if _is_hf_encoder(donor_dir):
+        Z_a_uniq, n_a, d_layers_uniq, tok_a = _capture_hf_encoder_layers(donor_dir, raw, "ANCHORS", layers_spec=layers)
+    else:
+        donor, tok_a = load(str(donor_dir))
+        n_a = len(donor.layers)
+        # Every donor layer the pairs can use: the recipient's layer count is known only once it is loaded.
+        d_layers_uniq = sorted({la for la, _ in parse_layers(layers, n_a, 10**6)})
+        ids_a = encode_prompts(tok_a, raw)
+        Z_a_uniq = capture_layers(donor, ids_a, d_layers_uniq)
+        del donor
+        gc.collect()
+        mx.clear_cache()
     d_a = Z_a_uniq.shape[-1]
     d_slot = {la: i for i, la in enumerate(d_layers_uniq)}
-    del donor
-    gc.collect()
-    mx.clear_cache()
 
     recip, tok_b = load(str(recip_dir))
     check_shared_ids(raw, tok_a, tok_b, "ANCHORS")
@@ -201,8 +288,97 @@ def fit(donor_dir, recip_dir, anchors_file, out_npz, layers=None, rank=None):
     )
 
 
+def check_probe_data(labels, lam):
+    """Refuse labels other than the integers 0 and 1 (both present), and LAMBDA <= 0."""
+    if not all(type(v) is int and v in (0, 1) for v in labels) or not {0, 1} <= set(labels):
+        raise SystemExit("bridge probe DATA.json needs binary labels (0 and 1), with at least one sample of each class")
+    if float(lam) <= 0:
+        raise SystemExit(f"LAMBDA must be > 0, got {lam}")
+
+
+def fit_probe_arrays(Z, labels, layer, num_layers, lam=1.0):
+    """Fit a standardized L2-regularized binary linear prompt sensor at `layer` and return steer-compatible arrays."""
+    X = np.asarray(Z, dtype=np.float64)
+    y = np.asarray(labels)
+    layer, num_layers, lam = int(layer), int(num_layers), float(lam)
+    if X.ndim != 2 or y.ndim != 1 or X.shape[0] != y.shape[0]:
+        raise SystemExit(f"incompatible probe shapes: X={X.shape}, y={y.shape}")
+    if not (0 <= layer < num_layers):
+        raise SystemExit(f"layer {layer} out of bounds for model with {num_layers} layers")
+    check_probe_data(y.tolist(), lam)
+    y = y.astype(np.int64)
+
+    mu = X.mean(axis=0)
+    std = X.std(axis=0)
+    std = np.where(std > 1e-6, std, 1.0)
+    Xn = (X - mu) / std
+    yf = y.astype(np.float64) * 2.0 - 1.0
+    U, s, Vt = np.linalg.svd(Xn, full_matrices=False)
+    w_std = Vt.T @ ((s / (s * s + lam)) * (U.T @ yf))
+    w_raw = w_std / std
+    norm = float(np.linalg.norm(w_raw))
+    if norm <= 1e-12:
+        raise SystemExit("degenerate zero-norm probe: classes are indistinguishable on these representations")
+    c_unit = w_raw / norm
+    scores = X @ c_unit
+    t_mid = 0.5 * (float(np.median(scores[y == 1])) + float(np.median(scores[y == 0])))
+    q = float(np.mean(scores <= t_mid))
+
+    dim = X.shape[1]
+    direction = np.zeros((num_layers, dim), np.float32)
+    cond = np.zeros((num_layers, dim), np.float32)
+    threshold = np.zeros(num_layers, np.float32)
+    quantile = np.full(num_layers, 0.5, np.float32)
+    cond[layer] = c_unit.astype(np.float32)
+    threshold[layer] = np.float32(t_mid)
+    quantile[layer] = np.float32(q)
+    return dict(
+        direction=direction,
+        cond=cond,
+        threshold=threshold,
+        quantile=quantile,
+        probe_layers=np.array([layer], np.int32),
+    )
+
+
+def probe(donor_dir, data_file, out_npz, layer, lam=1.0):
+    """Fit a binary linear prompt sensor on DONOR (MLX LM or HF PyTorch encoder) at LAYER and write OUT.npz."""
+    raw = report.read(data_file)
+    if not isinstance(raw, list) or not raw:
+        raise SystemExit("bridge probe DATA.json must be a non-empty JSON list of {'text'|'prompt', 'label': 0|1}")
+    labels = []
+    for row in raw:
+        if not isinstance(row, dict) or "label" not in row:
+            raise SystemExit(f"bridge probe entry needs 'label' (0 or 1): {row!r}")
+        labels.append(row["label"])
+    check_probe_data(labels, lam)
+    layer = int(layer)
+    if _is_hf_encoder(donor_dir):
+        Z_all, n_layers, _, _ = _capture_hf_encoder_layers(donor_dir, raw, "DATA.json", layers_idx=[layer])
+        Z = Z_all[:, 0, :]
+    else:
+        from mlx_lm import load
+        import mlx.core as mx
+
+        donor, tok = load(str(donor_dir))
+        n_layers = len(donor.layers)
+        if not (0 <= layer < n_layers):
+            raise SystemExit(f"layer {layer} out of bounds for model with {n_layers} layers")
+        ids = encode_prompts(tok, raw)
+        Z = capture_layers(donor, ids, [layer])[:, 0, :]
+        del donor, tok
+        gc.collect()
+        mx.clear_cache()
+
+    out = fit_probe_arrays(Z, labels, layer, n_layers, lam=float(lam))
+    np.savez(out_npz, **out)
+    scores = Z @ out["cond"][layer].astype(np.float64)
+    acc = float(np.mean((scores > float(out["threshold"][layer])) == np.asarray(labels, dtype=bool)))
+    print(f"fitted probe layer {layer}: n={len(labels)}, train_acc={acc:.4f}, threshold={float(out['threshold'][layer]):.4f}, quantile={float(out['quantile'][layer]):.4f}", flush=True)
+
+
 def map_arrays(bridge, st, calib_means=None):
-    """Map donor steer arrays {direction, cond, threshold} into recipient space with RMS scaling."""
+    """Map donor steer or probe arrays {direction, cond, threshold[, quantile]} into recipient space with RMS scaling."""
     donor_shape = (int(bridge["donor_num_layers"]), int(bridge["donor_dim"]))
     if st["direction"].shape != donor_shape or st["cond"].shape != donor_shape:
         raise SystemExit(f"DONOR_STEER is {st['direction'].shape}, but the bridge's donor model has (layers, width) {donor_shape}")
@@ -226,33 +402,41 @@ def map_arrays(bridge, st, calib_means=None):
 
         v_a = st["direction"][la].astype(np.float64)
         n_va = float(np.linalg.norm(v_a))
-        v_raw = v_a @ M.T
-        n_vraw = float(np.linalg.norm(v_raw))
-        tgt_norm = (n_va / ra) * rb
-        v_rms = v_raw * (tgt_norm / n_vraw)
-        direction[lb] = v_rms.astype(np.float32)
-        rms_norm[lb] = np.float32(tgt_norm)
+        if n_va > 1e-12:
+            v_raw = v_a @ M.T
+            n_vraw = float(np.linalg.norm(v_raw))
+            if n_vraw > 1e-12:
+                tgt_norm = (n_va / ra) * rb
+                v_rms = v_raw * (tgt_norm / n_vraw)
+                direction[lb] = v_rms.astype(np.float32)
+                rms_norm[lb] = np.float32(tgt_norm)
 
         c_a = st["cond"][la].astype(np.float64)
         c_raw = c_a @ M.T
         n_craw = float(np.linalg.norm(c_raw))
+        if n_craw <= 1e-12:
+            continue
         c_unit = c_raw / n_craw
         cond[lb] = c_unit.astype(np.float32)
 
         if calib_means is not None and lb in calib_means:
-            threshold[lb] = np.float32(np.median(calib_means[lb].astype(np.float64) @ c_unit))
+            q = float(st["quantile"][la]) if "quantile" in st else 0.5
+            threshold[lb] = np.float32(np.quantile(calib_means[lb].astype(np.float64) @ c_unit, q))
         else:
             t_a = float(st["threshold"][la])
             # Exact closed-form transform of hyperplane h_b @ c_unit > thresh from h_b = mu_b + sc * ((h_a - mu_a) @ M.T)
             t_b = float(mu_b @ c_unit) + sc / n_craw * (t_a - float(mu_a @ c_a))
             threshold[lb] = np.float32(t_b)
 
+    mapped = [lb for lb in r_layers if np.any(direction[lb]) or np.any(cond[lb])]
+    if not mapped:
+        raise SystemExit(f"DONOR_STEER has no direction or cond at the bridge's donor layers {d_layers}")
     return dict(
         direction=direction,
         cond=cond,
         threshold=threshold,
         rms_norm=rms_norm,
-        mapped_layers=np.array(r_layers, np.int32),
+        mapped_layers=np.array(mapped, np.int32),
     )
 
 

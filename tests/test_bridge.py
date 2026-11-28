@@ -315,3 +315,74 @@ def test_check_shared_ids_needs_shared_tokenizer():
     bridge.check_shared_ids(["text", {"prompt": "p", "answer": "a"}], qwen, gemma, "CALIB_DOCS")
     with pytest.raises(SystemExit):
         bridge.check_shared_ids(docs, qwen, gemma, "CALIB_DOCS")
+
+
+def test_fit_probe_arrays_and_quantile_calibration():
+    Za, Zb, Qa, _, _, _ = _make_synth_spaces(seed=99, n=320, d_a=24, d_b=16, r=8, scale=3.0)
+    f = bridge.fit_procrustes(Za[:160], Zb[:160])
+
+    # Imbalanced binary task (~1/3 negative, ~2/3 positive) along a latent direction
+    c_lat = np.zeros(8)
+    c_lat[0] = 1.0
+    latent_proj = (Za - Za.mean(0)) @ (Qa @ c_lat)
+    y = (latent_proj > np.quantile(latent_proj, 0.33)).astype(int)
+
+    n_a, n_b, la, lb = 12, 16, 4, 9
+    st = bridge.fit_probe_arrays(Za[160:240], y[160:240], layer=la, num_layers=n_a, lam=1.0)
+    assert st["direction"].shape == (n_a, 24)
+    assert np.all(st["direction"] == 0.0)
+    assert 0.20 < float(st["quantile"][la]) < 0.45
+
+    br = {
+        "donor_layers": np.array([la], np.int32),
+        "recip_layers": np.array([lb], np.int32),
+        "mu_a": f["mu_a"][None, :],
+        "mu_b": f["mu_b"][None, :],
+        "M": f["M"][None, :, :],
+        "scale": np.array([f["scale"]], np.float32),
+        "rms_a": np.array([f["rms_a"]], np.float32),
+        "rms_b": np.array([f["rms_b"]], np.float32),
+        "rank": np.array([f["rank"]], np.int32),
+        "donor_num_layers": np.int32(n_a),
+        "recip_num_layers": np.int32(n_b),
+        "donor_dim": np.int32(24),
+        "recip_dim": np.int32(16),
+    }
+    # Zero direction must map cleanly without NaN and quantile calibration must match donor quantile
+    mapped = bridge.map_arrays(br, st, calib_means={lb: Zb[160:240]})
+    assert np.all(np.isfinite(mapped["direction"])) and np.all(mapped["direction"] == 0.0)
+    assert np.all(np.isfinite(mapped["cond"][lb]))
+    expected_thr = float(np.quantile(Zb[160:240] @ mapped["cond"][lb], float(st["quantile"][la])))
+    assert abs(float(mapped["threshold"][lb]) - expected_thr) < 1e-5
+    preds = (Zb[240:] @ mapped["cond"][lb]) > float(mapped["threshold"][lb])
+    assert np.mean(preds == y[240:].astype(bool)) >= 0.85
+
+    # Only the pair holding the probe is mapped; a probe at no bridge donor layer is refused
+    br2 = {**br, "donor_layers": np.array([la, la + 1], np.int32), "recip_layers": np.array([lb, lb + 1], np.int32),
+           **{k: np.concatenate([br[k], br[k]]) for k in ("mu_a", "mu_b", "M", "scale", "rms_a", "rms_b", "rank")}}
+    assert list(bridge.map_arrays(br2, st)["mapped_layers"]) == [lb]
+    with pytest.raises(SystemExit):
+        bridge.map_arrays(br, bridge.fit_probe_arrays(Za[160:240], y[160:240], layer=la + 1, num_layers=n_a))
+
+    # Invalid single-class labels, labels other than the integers 0 and 1, and LAMBDA <= 0 are refused
+    with pytest.raises(SystemExit):
+        bridge.fit_probe_arrays(Za[:10], np.zeros(10, int), layer=0, num_layers=n_a)
+    for bad in ([0, 1, 0.8], [0, 1, True], [0, 1, "pos"], [0, 1, None]):
+        with pytest.raises(SystemExit):
+            bridge.check_probe_data(bad, 1.0)
+    with pytest.raises(SystemExit):
+        bridge.check_probe_data([0, 1], 0)
+    bridge.check_probe_data([0, 1, 1], 1.0)
+
+
+def test_is_hf_encoder_detection(tmp_path):
+    enc_dir = tmp_path / "modernbert"
+    enc_dir.mkdir()
+    (enc_dir / "config.json").write_text('{"model_type": "modernbert", "architectures": ["ModernBertForMaskedLM"]}', encoding="utf-8")
+    assert bridge._is_hf_encoder(enc_dir) is True
+
+    causal_dir = tmp_path / "qwen"
+    causal_dir.mkdir()
+    (causal_dir / "config.json").write_text('{"model_type": "qwen3_5", "architectures": ["Qwen3_5ForCausalLM"]}', encoding="utf-8")
+    assert bridge._is_hf_encoder(causal_dir) is False
+    assert bridge._is_hf_encoder(tmp_path / "missing") is False
