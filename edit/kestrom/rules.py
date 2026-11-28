@@ -107,6 +107,14 @@ a name in an h1 line: declared by an `in` line, or else read by a probe (by run,
                                              without the fact cache before decoding and passed as 0/1 `values` to the KV bank's rules (to the
                                              last step of "steps": earlier steps give their own; values given in "data" win; `"data"`
                                              may be omitted when the bank reads only those prompt inputs). OUT records "kv" as the matched entry key (list when >=2) or null. One kv line at most
+  alu: [MIN_DIGITS]                          inline exact integer sidecar (+, -, *, ×) during greedy decoding: whenever the generated
+                                             text ends with `<lhs> <op> <rhs> =` (at least MIN_DIGITS digits on either side, 4 unless
+                                             given, or 3x3+ multiplication), injects the exact BPE-aligned integer tokens and records
+                                             each injected position as an event; leaves unmatched outputs bit-identical (zero weight edits).
+                                             Not where the lhs continues a number or an expression (a digit, letter, `.` or `,` right
+                                             before it, or an operator or `(`), nor where the tokens do not spell the value after the
+                                             text; a token another line bans is not taken, and that firing is given up. OUT records
+                                             "alu" as a list of `{position, expr, injected}` firings whose whole value the output holds. One alu line at most
 """
 import ast
 import json
@@ -126,7 +134,7 @@ K = 4.0  # the scale of the out lines and the margin of the moves, unless a fit 
 TERM = re.compile(r"([+-]?)\s*(?:(\d+(?:\.\d+)?)\s*\*\s*)?([A-Za-z_][\w.]*)")
 CODE = re.compile(r'(?:[^"#]|"(?:[^"\\]|\\.)*")*')  # a line up to a # outside double quotes
 HEAD = re.compile(r'((?:[^":]|"(?:[^"\\]|\\.)*")*):')  # the head: up to the first : outside double quotes
-KINDS = ("in", "h1", "h2", "out", "move", "ban", "add", "phrase", "loopguard", "set", "open", "kv")
+KINDS = ("in", "h1", "h2", "out", "move", "ban", "add", "phrase", "loopguard", "set", "open", "kv", "alu")
 
 
 def lines(text):
@@ -227,6 +235,23 @@ def declare(body):
                      f"`number REGEX` or `prev UNIT`: {body!r}")
 
 
+def one_line(L, kind, usage, words, name, default):
+    """The one `kind` line of L as its `words` words and a count NAME after them (default where not given; at least 1), or None."""
+    found = [(rest, body.split()) for k, rest, body in L if k == kind]
+    if len(found) > 1 or found and (found[0][0] or len(found[0][1]) not in (words, words + 1)):
+        raise ValueError(f"one {kind} line at most, `{usage}`")
+    if not found:
+        return None
+    p = found[0][1]
+    try:
+        n = int(p[words]) if len(p) > words else default
+    except ValueError:
+        raise ValueError(f"the {name} of the {kind} line is a whole number")
+    if n < 1:
+        raise ValueError(f"the {name} of the {kind} line is at least 1")
+    return (*p[:words], n)
+
+
 def compile_rules(text, units=UNITS):
     """The rules as a dict: inputs (the probed ones, sorted, then those of the in lines in order), declared {name: spec}, tokens (of
     the out lines), moves [(X, Y, h2 unit)], bans [(tokens, h2 unit)], adds [(FILE, LAYER, [(h2 unit, coefficient)])], phrases, window
@@ -272,21 +297,8 @@ def compile_rules(text, units=UNITS):
     opens = [(rest, m.group(1), m.group(2), m.group(3) and text_of(m.group(3))) for rest, m in opens]
     if any(text is not None and not text[:1].strip() for *_, text in opens):
         raise ValueError("the TEXT of an open line begins with a character that is not white space")
-    kvs = []
-    for kind, rest, body in L:
-        if kind == "kv":
-            p = body.split()
-            if rest or len(p) not in (1, 2):
-                raise ValueError("one kv line at most, `kv: BANK_DIR [MAX_MATCH]`")
-            try:
-                mm = int(p[1]) if len(p) == 2 else 1
-            except ValueError:
-                raise ValueError("one kv line at most, `kv: BANK_DIR [MAX_MATCH]`")
-            if mm < 1:
-                raise ValueError("the MAX_MATCH of a kv line is at least 1")
-            kvs.append((p[0], mm))
-    if len(kvs) > 1:
-        raise ValueError("one kv line at most, `kv: BANK_DIR [MAX_MATCH]`")
+    kvs = one_line(L, "kv", "kv: BANK_DIR [MAX_MATCH]", 1, "MAX_MATCH", 1)
+    alus = one_line(L, "alu", "alu: [MIN_DIGITS]", 0, "MIN_DIGITS", 4)
     sets = []
     for kind, rest, body in L:
         if kind == "set":
@@ -321,7 +333,7 @@ def compile_rules(text, units=UNITS):
     used = sorted(set(np.flatnonzero(net["W3"].any(1)).tolist()) | {u for _, _, u in moves} | {u for _, u in bans})
     return dict(inputs=inputs, declared=declared, tokens=tokens, moves=moves, bans=bans, adds=adds, phrases=phrases,
                 window=(int(loops[0]) if loops[0] else WINDOW) if loops else None, used=used, units=h2n, sets=sets, net=net,
-                open=opens[0] if opens else None, kv=kvs[0] if kvs else None)
+                open=opens[0] if opens else None, kv=kvs, alu=alus[0] if alus else None)
 
 
 def unit_values(net, x, xp=np):
@@ -349,7 +361,7 @@ def standalone(rules_file):
     R["heads"] = {}
     for i, c in enumerate(R["tokens"]):
         R["heads"].setdefault(c.split("/", 1)[0] if "/" in c else "", []).append(i)
-    if R["moves"] or R["bans"] or R["adds"] or R["phrases"] or R["window"] is not None or R["open"] or R["kv"] or not R["tokens"] or any(
+    if R["moves"] or R["bans"] or R["adds"] or R["phrases"] or R["window"] is not None or R["open"] or R["kv"] or R["alu"] is not None or not R["tokens"] or any(
             s[0] not in STANDALONE or (s[0] == "prev" and s[1] not in R["units"]) for s in R["declared"].values()) or any(
             name in R["declared"] or any(t not in R["inputs"] + R["registers"] for t in names_of(e)) for name, e, _ in R["sets"]):
         raise SystemExit(f"run, build and weigh read in lines of {', '.join(STANDALONE)} (prev of an h2 unit), h1, h2, out and set lines only (a set "

@@ -9,10 +9,12 @@ PROMPTS: a JSON list of {"ids": prompt ids, "data" (with an open or kv line: wha
 the tokens without the stop token, text, events (sorted positions) and detail (each backtrack: kind, phrase or loop, position,
 kept: whether the final output kept the tokens before it; a phrase also string and banned, the token banned, null with gave_up
 when it gave up), with an open line open (the class the answer opens with by that line, null where the rules answered none
-and the line gives no class, the answer was left alone, the thinking did not end or the answer was cut short of it), and with a kv line
-kv (the matched bank entry key, a list of keys when MAX_MATCH > 1 matches several, or null where no entry matched)."""
+and the line gives no class, the answer was left alone, the thinking did not end or the answer was cut short of it), with a kv line
+kv (the matched bank entry key, a list of keys when MAX_MATCH > 1 matches several, or null where no entry matched), and with an alu line
+alu (each inline sidecar arithmetic firing whose whole value the output holds: position, expr, injected)."""
 import argparse
 import json
+import re
 
 import numpy as np
 
@@ -21,6 +23,23 @@ from kestrom_verify import report
 from . import kv, loopguard, rules
 
 MAX_PER_POSITION = 20  # backtracks for a phrase at one position before giving up there
+INLINE_ALU_RE = re.compile(r"(?<![0-9A-Za-z_.,])(\d{1,3}(?:,\d{3})+|\d+)\s*([+\-*×])\s*(\d{1,3}(?:,\d{3})+|\d+)\s*=( ?)\Z")
+ALU_BEFORE = tuple("+-−*×/÷^%(")  # an lhs after one of these is part of a longer expression (or signed): not computed
+
+
+def match_inline_alu(text, min_digits):
+    """If `text` ends with a qualifying multi-digit `<lhs> <op> <rhs> =` expression, return `(expr, inject_str)` else `(None, None)`:
+    not where the lhs continues a number (a digit, a letter, `.` or `,` before it) or an expression (an operator or `(` before it)."""
+    m = INLINE_ALU_RE.search(text)
+    if not m or text[:m.start()].rstrip()[-1:] in ALU_BEFORE:
+        return None, None
+    lhs_s, op, rhs_s, trailing_space = m.group(1).replace(",", ""), m.group(2), m.group(3).replace(",", ""), m.group(4)
+    is_mul = op in ("*", "×")
+    if not ((len(lhs_s) >= min_digits or len(rhs_s) >= min_digits) or (is_mul and len(lhs_s) >= 3 and len(rhs_s) >= 3)):
+        return None, None
+    lhs, rhs = int(lhs_s), int(rhs_s)
+    val = lhs + rhs if op == "+" else lhs - rhs if op == "-" else lhs * rhs
+    return f"{lhs}{op}{rhs}", ("" if trailing_space == " " else " ") + str(val)
 
 
 def start_token(tok, toks, char):
@@ -61,7 +80,7 @@ def answer(tok, toks, think, thinking=False, part=()):
     return thinking, part
 
 
-def processors(toks, ban, copy_found, think_end, tok=None, opening=None, spelled=None, think=(None, None), thinking=False):
+def processors(toks, ban, copy_found, think_end, tok=None, opening=None, spelled=None, think=(None, None), thinking=False, alu=None, alu_fires=None):
     """The logits processors of one restart at position len(toks): ban (phrases) at its first step only; after a loop was found,
     no 16-token piece the output already holds until </think>; with an opening (an open line: its characters, those of every
     class the answer may open with, and those the thinking opens with or None), its characters while the answer (see answer;
@@ -128,6 +147,31 @@ def processors(toks, ban, copy_found, think_end, tok=None, opening=None, spelled
                 logits[:, t] = 0.0
             return logits
         out.append(open_)
+    if alu is not None:
+        alu_seen, alu_pending, alu_called = list(toks), [], []
+
+        def alu_(tokens, logits):  # after the others: a token they ban is not taken, and the firing is given up
+            if alu_called:
+                alu_seen.append(int(tokens[-1]))
+            alu_called.append(1)
+            if not alu_pending and alu_seen:
+                text = tok.decode(alu_seen)
+                expr, inject = match_inline_alu(text, alu)
+                if inject is not None:
+                    ids_inj = [int(t) for t in tok.encode(inject, add_special_tokens=False)]
+                    if ids_inj and tok.decode(alu_seen + ids_inj) == text + inject:  # the tokens spell the value in this context
+                        alu_pending.extend(ids_inj)
+                        alu_fires.append({"position": len(alu_seen), "expr": expr, "injected": inject.strip(), "length": len(ids_inj)})
+            if alu_pending and float(logits[0, alu_pending[0]]) == float("-inf"):
+                alu_pending.clear()
+                alu_fires.pop()
+            if alu_pending:
+                t = alu_pending.pop(0)
+                spelled.append(len(alu_seen))
+                logits = mx.full(logits.shape, float("-inf"), dtype=logits.dtype)
+                logits[:, t] = 0.0
+            return logits
+        out.append(alu_)
     return out
 
 
@@ -139,8 +183,8 @@ def acted(record, p, end, prefill=False):
     return {p + j for j, f in enumerate(steps) if f and p + j < end} | ({p} if prefill and p < end and any(bool(f) for n, f in record if n > 1) else set())
 
 
-def decode(model, tok, ids, max_tokens, phrases=(), window=None, think_end=None, opening=None, think_start=None, cache_fn=None):
-    """Greedy with the rules of rules.SIDE on the model and the watching edits given here (phrases, loopguard, opening, cache_fn). Returns the tokens,
+def decode(model, tok, ids, max_tokens, phrases=(), window=None, think_end=None, opening=None, think_start=None, cache_fn=None, alu=None, alu_fires=None):
+    """Greedy with the rules of rules.SIDE on the model and the watching edits given here (phrases, loopguard, opening, cache_fn, alu). Returns the tokens,
     the finish, the positions where an edit acted in the final output, and the backtracks."""
     import mlx.core as mx
     from mlx_lm.generate import generate_step
@@ -153,7 +197,8 @@ def decode(model, tok, ids, max_tokens, phrases=(), window=None, think_end=None,
         p = len(toks)
         rules.restart(len(ids))
         spelled = []
-        procs = processors(toks, sorted(bans.get(p, ())), copy_found, think_end, tok, opening, spelled, think, thinking0)
+        round_alu = []
+        procs = processors(toks, sorted(bans.get(p, ())), copy_found, think_end, tok, opening, spelled, think, thinking0, alu, round_alu)
         prompt_cache = cache_fn() if cache_fn is not None else None
         step = generate_step(mx.array(ids + toks), model, max_tokens=max_tokens - p, logits_processors=procs or None, prompt_cache=prompt_cache)
         done = len(tok.decode(toks)) if phrases else 0  # an occurrence counts once its end is past the text checked so far
@@ -188,6 +233,8 @@ def decode(model, tok, ids, max_tokens, phrases=(), window=None, think_end=None,
                 break
         end = back if back is not None else len(toks) + (finish == "stop")
         fired = {j for j in fired if j < end} | acted(rules.SIDE["record"], p, end) | acted(rules.SIDE["record_add"], p, end, True) | {j for j in spelled if j < end}
+        if alu is not None:  # a firing counts where its whole value is in the output
+            alu_fires[:] = [e for e in alu_fires + round_alu if e["position"] + e["length"] <= end]
         if back is None:
             if cache_fn is not None:
                 fired.add(0)
@@ -222,7 +269,8 @@ def run(model_dir, prompts_file, out, max_tokens=report.MAX_TOKENS, rules_file=N
                 cache_fn = lambda entries=kv_entries, b=bank: compose_cache.get_or_build(model, tok, b, entries)  # noqa: E731
             else:
                 kv_key, feed_ids, cache_fn = None, x["ids"], None
-            toks, finish, fired, detail = decode(model, tok, feed_ids, int(max_tokens), rules.SIDE.get("phrases", ()), rules.SIDE.get("window"), think_end, opening, think_start, cache_fn)
+            alu_fires = [] if rules.SIDE.get("alu") is not None else None
+            toks, finish, fired, detail = decode(model, tok, feed_ids, int(max_tokens), rules.SIDE.get("phrases", ()), rules.SIDE.get("window"), think_end, opening, think_start, cache_fn, rules.SIDE.get("alu"), alu_fires)
             for e in detail:
                 e["kept"] = toks[:e["position"]] == e.pop("prefix")
             events = sorted(fired | {e["position"] for e in detail})
@@ -232,6 +280,8 @@ def run(model_dir, prompts_file, out, max_tokens=report.MAX_TOKENS, rules_file=N
                 row["open"] = opening[0][:-1] if opening and not thinking and tok.decode(part).startswith(opening[0]) else None
             if rules.SIDE.get("kv"):
                 row["kv"] = kv_key
+            if rules.SIDE.get("alu") is not None:
+                row["alu"] = [{k: v for k, v in e.items() if k != "length"} for e in alu_fires]
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
             f.flush()
             print(x["id"], finish, len(toks), "events", len(events), flush=True)
