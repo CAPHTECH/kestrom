@@ -11,7 +11,7 @@ kept: whether the final output kept the tokens before it; a phrase also string a
 when it gave up), with an open line open (the class the answer opens with by that line, null where the rules answered none
 and the line gives no class, the answer was left alone, the thinking did not end or the answer was cut short of it), with a kv line
 kv (the matched bank entry key, a list of keys when MAX_MATCH > 1 matches several, or null where no entry matched), and with an alu line
-alu (each inline sidecar arithmetic firing: position, expr, injected)."""
+alu (each inline sidecar arithmetic firing whose whole value the output holds: position, expr, injected)."""
 import argparse
 import json
 import re
@@ -23,13 +23,15 @@ from kestrom_verify import report
 from . import kv, loopguard, rules
 
 MAX_PER_POSITION = 20  # backtracks for a phrase at one position before giving up there
-INLINE_ALU_RE = re.compile(r"(?<![\d,])(\d{1,3}(?:,\d{3})+|\d+)\s*([+\-*×])\s*(\d{1,3}(?:,\d{3})+|\d+)\s*=( ?)$")
+INLINE_ALU_RE = re.compile(r"(?<![0-9A-Za-z_.,])(\d{1,3}(?:,\d{3})+|\d+)\s*([+\-*×])\s*(\d{1,3}(?:,\d{3})+|\d+)\s*=( ?)\Z")
+ALU_BEFORE = tuple("+-−*×/÷^%(")  # an lhs after one of these is part of a longer expression (or signed): not computed
 
 
-def match_inline_alu(text, min_digits=4):
-    """If `text` ends with a qualifying multi-digit `<lhs> <op> <rhs> =` expression, return `(expr, inject_str)` else `(None, None)`."""
+def match_inline_alu(text, min_digits):
+    """If `text` ends with a qualifying multi-digit `<lhs> <op> <rhs> =` expression, return `(expr, inject_str)` else `(None, None)`:
+    not where the lhs continues a number (a digit, a letter, `.` or `,` before it) or an expression (an operator or `(` before it)."""
     m = INLINE_ALU_RE.search(text)
-    if not m:
+    if not m or text[:m.start()].rstrip()[-1:] in ALU_BEFORE:
         return None, None
     lhs_s, op, rhs_s, trailing_space = m.group(1).replace(",", ""), m.group(2), m.group(3).replace(",", ""), m.group(4)
     is_mul = op in ("*", "×")
@@ -148,18 +150,21 @@ def processors(toks, ban, copy_found, think_end, tok=None, opening=None, spelled
     if alu is not None:
         alu_seen, alu_pending, alu_called = list(toks), [], []
 
-        def alu_(tokens, logits):
+        def alu_(tokens, logits):  # after the others: a token they ban is not taken, and the firing is given up
             if alu_called:
                 alu_seen.append(int(tokens[-1]))
             alu_called.append(1)
             if not alu_pending and alu_seen:
-                expr, inject = match_inline_alu(tok.decode(alu_seen), alu)
+                text = tok.decode(alu_seen)
+                expr, inject = match_inline_alu(text, alu)
                 if inject is not None:
-                    ids_inj = tok.encode(inject, add_special_tokens=False)
-                    if ids_inj:
-                        alu_pending.extend(int(t) for t in ids_inj)
-                        if alu_fires is not None:
-                            alu_fires.append({"position": len(alu_seen), "expr": expr, "injected": inject.strip()})
+                    ids_inj = [int(t) for t in tok.encode(inject, add_special_tokens=False)]
+                    if ids_inj and tok.decode(alu_seen + ids_inj) == text + inject:  # the tokens spell the value in this context
+                        alu_pending.extend(ids_inj)
+                        alu_fires.append({"position": len(alu_seen), "expr": expr, "injected": inject.strip(), "length": len(ids_inj)})
+            if alu_pending and float(logits[0, alu_pending[0]]) == float("-inf"):
+                alu_pending.clear()
+                alu_fires.pop()
             if alu_pending:
                 t = alu_pending.pop(0)
                 spelled.append(len(alu_seen))
@@ -192,7 +197,7 @@ def decode(model, tok, ids, max_tokens, phrases=(), window=None, think_end=None,
         p = len(toks)
         rules.restart(len(ids))
         spelled = []
-        round_alu = [] if alu is not None else None
+        round_alu = []
         procs = processors(toks, sorted(bans.get(p, ())), copy_found, think_end, tok, opening, spelled, think, thinking0, alu, round_alu)
         prompt_cache = cache_fn() if cache_fn is not None else None
         step = generate_step(mx.array(ids + toks), model, max_tokens=max_tokens - p, logits_processors=procs or None, prompt_cache=prompt_cache)
@@ -228,8 +233,8 @@ def decode(model, tok, ids, max_tokens, phrases=(), window=None, think_end=None,
                 break
         end = back if back is not None else len(toks) + (finish == "stop")
         fired = {j for j in fired if j < end} | acted(rules.SIDE["record"], p, end) | acted(rules.SIDE["record_add"], p, end, True) | {j for j in spelled if j < end}
-        if alu_fires is not None and round_alu is not None:
-            alu_fires[:] = [e for e in alu_fires if e["position"] < end] + [e for e in round_alu if e["position"] < end]
+        if alu is not None:  # a firing counts where its whole value is in the output
+            alu_fires[:] = [e for e in alu_fires + round_alu if e["position"] + e["length"] <= end]
         if back is None:
             if cache_fn is not None:
                 fired.add(0)
@@ -276,7 +281,7 @@ def run(model_dir, prompts_file, out, max_tokens=report.MAX_TOKENS, rules_file=N
             if rules.SIDE.get("kv"):
                 row["kv"] = kv_key
             if rules.SIDE.get("alu") is not None:
-                row["alu"] = alu_fires
+                row["alu"] = [{k: v for k, v in e.items() if k != "length"} for e in alu_fires]
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
             f.flush()
             print(x["id"], finish, len(toks), "events", len(events), flush=True)
