@@ -35,15 +35,24 @@ needs a renewal, unless one of the free licenses covers it.
 What is not in it:
 
 - Support with a promised response time. Questions go to the issues of the repository.
-- A license for your customers. Whoever receives `kestrom` from you, alone or inside a product, needs a license of their own, free
-  or paid. A license that covers your customers is set by a written agreement.
+- A license for your customers or third-party client engagements. Whoever receives `kestrom` from you, alone or inside a product,
+  needs a license of their own, free or paid, and running `kestrom` on behalf of third-party clients requires a written
+  agreement. A license that covers your customers or client engagements is set by a written agreement.
 - A warranty. The software comes as is (the No Liability section of the license).
 
 The commercial license is governed by the laws of Japan, and the Tokyo District Court has exclusive jurisdiction in the first
 instance over any dispute about it.
 
-Before you buy: `kestrom ifc`, `kestrom inspect mirror`/`disarm`, and `kestrom-verify` are tested on both Apple Silicon (MLX) and Linux/NVIDIA CUDA (`torch`) (`kestrom audit` invokes `diff` and `inspect mirror` and is unit-tested on Linux CI with NumPy `nf4`, not yet run end-to-end on CUDA); `kv`, `rules`, `bridge`, and `rows` are tested on Apple Silicon (MLX) only (`docs/guarantees.md`). Use
-the free trial to check it on your application: payments are not refunded.
+Before you buy: `kestrom ifc`, `kestrom inspect mirror`/`disarm`, and `kestrom-verify` (`generate torch`, `compare events`,
+`diff`) are tested on both Apple Silicon (MLX; `torch` on MPS) and Linux/NVIDIA CUDA (`torch`). `kestrom-verify container` (GGUF and safetensors
+structural and metadata checks) is byte-level, runtime-independent, and unit-tested on Linux CI. `kestrom audit` supports
+standalone GGUF container inspection (recording `mirror` as `SKIPPED`, so `NO_FINDINGS` on a GGUF file means no backdoor scan
+ran) as well as safetensors folders; its full `container` + `diff` + `mirror` pipeline is unit-tested on Linux CI with NumPy
+`nf4` (not yet run end-to-end on CUDA). `kestrom bridge` supports `mlx` and `torch` (`torch` runtime run end-to-end on macOS MPS
+only; Linux NumPy CI covers its NumPy components, not yet run end-to-end on Linux/CUDA); `kv`, `rules`, and `rows` are tested on
+Apple Silicon (MLX) only (`docs/guarantees.md`). For pre-purchase technical scope questions, use
+[GitHub Discussions](https://github.com/CAPHTECH/kestrom/discussions). Use the free trial to check it on your application:
+payments are not refunded.
 
 ## How to buy
 
@@ -52,3 +61,20 @@ card, or an invoice (bank transfer). The license starts on the day of payment, u
 invoice or receipt names the company and the year.
 
 The checker, `kestrom-verify`, is Apache-2.0 and needs no license from us, also for companies: anyone may check an edit.
+
+## Enterprise, Partner & OEM Agreements
+
+The Paid use license above already covers use of `kestrom` for the benefit of the licensed company (including its own internal
+R&D and its own production systems) on an as-is basis, without an SLA or custom contract terms. Separate written agreements with
+CAPH TECH Inc. are available for:
+
+- **Enterprise Support & Procurement**: optional agreement for companies that require an NDA, vendor security onboarding, custom
+  contract or invoicing terms, architecture review, or priority technical Q&A with defined response targets (reference range:
+  25,000–50,000 USD / year; optional scoped PoC).
+- **SIer & Security Audit Partner License**: required when running `kestrom` or `kestrom audit` for the benefit of third-party
+  clients or delivering `kestrom` / acceptance gates in client engagements.
+- **OEM / Platform SDK License**: required when embedding or distributing `kestrom` (`inspect mirror` / `disarm`, `ifc`,
+  `audit`) inside commercial scanners, registries, or platforms offered to customers (reference range: 50,000–150,000 USD / year).
+
+For technical scoping, use [GitHub Discussions](https://github.com/CAPHTECH/kestrom/discussions); for commercial inquiries, write
+as in **How to buy** above.

@@ -11,7 +11,24 @@ jobs:
       - run: pip install numpy pytest setuptools
       - run: python -m pytest -q   # the model tests skip without KESTROM_MODEL (MLX needs Apple Silicon)
       - run: |
-          pip install --no-build-isolation --no-deps ./verify ./edit
+          pip install --no-build-isolation ./verify ./edit
+          unset PYTHONPATH
           python -c "import kestrom.__main__, kestrom_verify.__main__"
           kestrom-verify --help >/dev/null 2>&1 || test $? -eq 1
           kestrom --help >/dev/null 2>&1 || test $? -eq 1
+          TMP=$(mktemp -d)
+          trap 'rm -rf "$TMP"' EXIT
+          python - "$TMP/model" <<'PY'
+          import json, sys
+          from pathlib import Path
+          import numpy as np
+          d = Path(sys.argv[1]); d.mkdir(parents=True)
+          w = (np.random.default_rng(0).standard_normal((128, 256)) * 0.05).astype(np.float32)
+          raw = w.tobytes()
+          hdr = json.dumps({"layers.0.mlp.down_proj.weight": {"dtype": "F32", "shape": [128, 256], "data_offsets": [0, len(raw)]}}).encode()
+          hdr += b" " * (-len(hdr) % 8)
+          (d / "model.safetensors").write_bytes(len(hdr).to_bytes(8, "little") + hdr + raw)
+          (d / "config.json").write_text("{}\n")
+          PY
+          kestrom-verify container "$TMP/model" "$TMP/container.json"
+          kestrom audit "$TMP/model" "$TMP/audit" none none nf4 4 64 torch
